@@ -32,6 +32,7 @@ def parse_args():
     parser.add_argument("--server", type=Path, default=SERVER)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--gpu-layers", default="0")
+    parser.add_argument("--fit-target", type=int)
     return parser.parse_args()
 
 
@@ -154,6 +155,8 @@ def main():
         "--override-kv",
         f"dory.num_loops=int:{args.loops},dory.recurrent_kv_cache_mode=str:per_loop",
     ]
+    if args.fit_target is not None:
+        command.extend(["--fit", "on", "--fit-target", str(args.fit_target)])
     process = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT)
     peak_rss = [0]
     peak_vram_mib = [0]
@@ -194,6 +197,7 @@ def main():
             "peak_vram_mib": peak_vram_mib[0],
             "model": str(args.model),
             "gpu_layers": args.gpu_layers,
+            "fit_target_mib": args.fit_target,
             "strict_prompt_accuracy": scores["strict"]["prompt_accuracy"],
             "strict_instruction_accuracy": scores["strict"]["instruction_accuracy"],
             "loose_prompt_accuracy": scores["loose"]["prompt_accuracy"],
