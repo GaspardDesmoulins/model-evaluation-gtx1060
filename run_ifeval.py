@@ -17,7 +17,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent
 SERVER = ROOT / "llama.cpp-dory/build-cpu/bin/llama-server"
-MODEL = ROOT / "models/NVIDIA-Nemotron-Labs-Dory1.0-4B-Q5_K_M.gguf"
+DEFAULT_MODEL = ROOT / "models/NVIDIA-Nemotron-Labs-Dory1.0-4B-Q5_K_M.gguf"
 IFEVAL_ROOT = ROOT / "ifeval-source"
 INPUTS = IFEVAL_ROOT / "instruction_following_eval/data/input_data.jsonl"
 
@@ -29,6 +29,9 @@ def parse_args():
     parser.add_argument("--max-tokens", type=int, default=1024)
     parser.add_argument("--threads", type=int, default=6)
     parser.add_argument("--port", type=int, default=8081)
+    parser.add_argument("--server", type=Path, default=SERVER)
+    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument("--gpu-layers", default="0")
     return parser.parse_args()
 
 
@@ -73,9 +76,24 @@ def read_rss_bytes(pid):
     return 0
 
 
-def monitor_rss(process, peak):
+def gpu_memory_mib():
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=memory.used",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    return max(int(value) for value in result.stdout.splitlines())
+
+
+def monitor_memory(process, cpu_peak, gpu_peak):
     while process.poll() is None:
-        peak[0] = max(peak[0], read_rss_bytes(process.pid))
+        cpu_peak[0] = max(cpu_peak[0], read_rss_bytes(process.pid))
+        gpu_peak[0] = max(gpu_peak[0], gpu_memory_mib())
         time.sleep(0.25)
 
 
@@ -105,7 +123,7 @@ def score_responses(output_dir, responses_file):
 
 def main():
     args = parse_args()
-    if not SERVER.is_file() or not MODEL.is_file() or not INPUTS.is_file():
+    if not args.server.is_file() or not args.model.is_file() or not INPUTS.is_file():
         raise FileNotFoundError("Dory server, Q5 model, or official IFEval inputs are missing")
 
     output_dir = ROOT / "results" / f"ifeval-loop-{args.loops}"
@@ -117,15 +135,15 @@ def main():
 
     log_file = (output_dir / "server.log").open("w", encoding="utf-8")
     command = [
-        str(SERVER),
+        str(args.server),
         "-m",
-        str(MODEL),
+        str(args.model),
         "--host",
         "127.0.0.1",
         "--port",
         str(args.port),
         "-ngl",
-        "0",
+        args.gpu_layers,
         "-t",
         str(args.threads),
         "-c",
@@ -138,7 +156,10 @@ def main():
     ]
     process = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT)
     peak_rss = [0]
-    monitor = threading.Thread(target=monitor_rss, args=(process, peak_rss), daemon=True)
+    peak_vram_mib = [0]
+    monitor = threading.Thread(
+        target=monitor_memory, args=(process, peak_rss, peak_vram_mib), daemon=True
+    )
     monitor.start()
 
     try:
@@ -170,6 +191,9 @@ def main():
             "context_size": 4096,
             "kv_cache_mode": "per_loop",
             "peak_rss_bytes": peak_rss[0],
+            "peak_vram_mib": peak_vram_mib[0],
+            "model": str(args.model),
+            "gpu_layers": args.gpu_layers,
             "strict_prompt_accuracy": scores["strict"]["prompt_accuracy"],
             "strict_instruction_accuracy": scores["strict"]["instruction_accuracy"],
             "loose_prompt_accuracy": scores["loose"]["prompt_accuracy"],

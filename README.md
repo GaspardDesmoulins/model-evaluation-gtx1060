@@ -118,3 +118,17 @@ Machine : Intel Core i7-8750H (6 cœurs physiques), CPU uniquement, 6 threads,
 | Q3_K_M | 15,04 ± 0,35 tok/s | 4,45 ± 0,12 tok/s |
 
 Le rapport brut est disponible dans [`benchmark.md`](benchmark.md).
+
+## IFEval GPU (échantillon)
+
+Échantillon déterministe de 16 prompts IFEval, Q3_K_M, 512 tokens maximum,
+contexte 4 096, cache `per_loop`, 193/193 couches sur une GTX 1060 3 Go.
+
+| Boucles | Strict (prompts) | Relâché (prompts) | Pic RAM | Pic VRAM |
+|---:|---:|---:|---:|---:|
+| 1 | 37,5 % | 43,75 % | 3,01 Gio | 2 479 Mio |
+| 2 | 43,75 % | 50,0 % | 3,62 Gio | 2 805 Mio |
+| 4 | 37,5 % | 37,5 % | 4,70 Gio | 2 923 Mio |
+
+Cette mesure est un échantillon, pas le score IFEval officiel complet de 541
+prompts. Le meilleur compromis sur cet échantillon est deux boucles.

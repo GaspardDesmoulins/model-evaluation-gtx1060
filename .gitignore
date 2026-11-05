@@ -1,5 +1,5 @@
 # Model weights and downloaded artifacts
-models/
+models
 tools/
 
 # Dory-enabled llama.cpp source checkout and build products
