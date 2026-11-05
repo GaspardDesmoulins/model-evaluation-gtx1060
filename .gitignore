@@ -1,0 +1,14 @@
+# Model weights and downloaded artifacts
+models/
+tools/
+
+# Dory-enabled llama.cpp source checkout and build products
+llama.cpp-dory/
+ifeval-source/
+
+# Generated evaluation inputs, responses, logs, and scores
+results/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
