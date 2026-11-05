@@ -1,134 +1,76 @@
-# Dory sur CPU
+# Évaluation locale de modèles sur GTX 1060
 
-Cet espace est réservé à l'échange avec Gemini concernant la mise en place
-du modèle Dory de NVIDIA sur un PC sans GPU.
+Machine testée : Intel Core i7-8750H (6 cœurs), 8 Gio de RAM, NVIDIA GTX 1060
+(3 Gio de VRAM), WSL. Les artefacts lourds sont stockés sur `D:` :
+`/mnt/d/dory`; `models/` est un lien vers ce répertoire.
 
-## Échange avec Gemini
+## Installation validée
+
+- Dory : fork `brianchmielNV/llama.cpp` au commit
+  `98a74c97ea09ac72f6ceda1559808fc0a2f447ce`.
+- GPU : CUDA 12.8 local, compilé pour Pascal SM 6.1. CUDA 13 ne supporte plus
+  cette architecture.
+- Q5_K_M : export NVIDIA, SHA-256 vérifié.
+- Q3_K_M : requantifié localement depuis Q5 ; NVIDIA ne publie pas de Q3.
+
+Le binaire CUDA est `llama.cpp-dory/build-cuda/bin/llama-server`. Avant de
+l'utiliser, définir :
+
+```bash
+CUDA_HOME=/mnt/d/dory/tools/cuda-12.8-root/usr/local/cuda-12.8
+export LD_LIBRARY_PATH="$PWD/llama.cpp-dory/build-cuda/bin:$CUDA_HOME/lib64:/usr/lib/wsl/lib"
 ```
 
-Pour s'adapter à votre GTX 1060 (3 Go de VRAM) sur votre PC personnel, il est préférable d'abandonner la version Q5_K_M (3,5 Go) qui est trop lourde pour votre carte. Nous allons plutôt télécharger la version Q3_K_M (environ 2,4 Go). Grâce à cette taille réduite, le modèle pourra tenir presque entièrement dans vos 3 Go de VRAM, ce qui maximisera l'accélération de votre carte graphique.
-Voici la procédure complète mise à jour, incluant la commande de récupération automatique via Ollama.
+## Mesures de débit
 
-Étape 1 : Préparer l'environnement CUDA sous Ubuntu (WSL)
+`llama-bench`, 6 threads, contexte de 128 tokens et génération de 64 tokens :
 
-Installez le compilateur CUDA (nvcc) et les bibliothèques système requises pour la compilation :
-bash
-sudo apt update
-sudo apt install -y build-essential cmake git libssl-dev nvidia-cuda-toolkit
-Utilisez le code avec précaution.
+| Modèle | Backend | Prompt | Génération |
+|---|---|---:|---:|
+| Dory Q5 | CPU | 14,76 tok/s | 3,34 tok/s |
+| Dory Q3 | CPU | 15,04 tok/s | 4,45 tok/s |
+| Dory Q3, 193/193 couches | CUDA | 166,01 tok/s | 4,13 tok/s |
+| Dory Q5, offload ajusté | CUDA | 113,94 tok/s | 2,79 tok/s |
 
-Étape 2 : Télécharger les poids adaptés (Q3_K_M) avec Ollama
+Le GPU accélère fortement le traitement du prompt. Sur cette GTX 1060, la
+génération hybride du Q5 reste plus lente que sur CPU seul.
 
-Nous utilisons ollama pull pour récupérer directement la version légère (3-bit) depuis Hugging Face sans lancer le modèle :
-bash
-ollama pull hf.co/nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-GGUF:Q3_K_M
-Utilisez le code avec précaution.
+## IFEval
 
-Étape 3 : Créer le lien symbolique vers le bon Blob d'Ollama
+Les résultats utilisent un échantillon déterministe de 16 des 541 prompts
+IFEval, 512 tokens maximum, contexte 4 096 et `temperature=0`. Ce ne sont pas
+des scores IFEval officiels complets.
 
-Puisque vous venez de télécharger le modèle, nous utilisons une commande dynamique (find) pour cibler automatiquement le fichier qui pèse environ 2,4 Go dans le stockage d'Ollama, évitant ainsi d'avoir à chercher manuellement le hash sha256 :
-bash
-# Recherche automatique du fichier entre 2,1 Go et 2,7 Go et création du lien
-BLOB_PATH=$(sudo find /usr/share/ollama/.ollama/models/blobs/ -type f -size +2100M -size -2700M | head -n 1)
-ln -s "$BLOB_PATH" ./dory-q3_k_m.gguf
-Utilisez le code avec précaution.
+| Modèle | Boucles | Strict | Relâché | Pic RAM | Pic VRAM |
+|---|---:|---:|---:|---:|---:|
+| Dory Q3 | 1 | 37,5 % | 43,75 % | 3,01 Gio | 2 479 Mio |
+| Dory Q3 | 2 | 43,75 % | 50,0 % | 3,62 Gio | 2 805 Mio |
+| Dory Q3 | 4 | 37,5 % | 37,5 % | 4,70 Gio | 2 923 Mio |
+| Dory Q5 | 2 | 56,25 % | 56,25 % | 5,69 Gio | 2 275 Mio |
+| Dory Q5 | 4 | 56,25 % | 56,25 % | 6,18 Gio | 2 275 Mio |
 
-Étape 4 : Récupérer le code source de la branche Dory
+**Recommandation actuelle : Dory Q5 à 2 boucles.** Il égale le Q5 à 4 boucles
+sur cet échantillon, avec moins de RAM et de calcul.
 
-Initialisez le dépôt llama.cpp et basculez sur le commit de développement dédié à l'architecture en boucle :
-bash
-git init llama.cpp-dory
-cd llama.cpp-dory
-git remote add origin https://github.com
-git fetch --depth 1 origin 98a74c97ea09ac72f6ceda1559808fc0a2f447ce
-git checkout --detach FETCH_HEAD
-Utilisez le code avec précaution.
+## Reproduire les évaluations
 
-Étape 5 : Compiler llama.cpp avec le support NVIDIA CUDA
+`run_ifeval.py` démarre un serveur Dory, évalue les prompts et conserve les
+scores stricts/relâchés ainsi que les pics mémoire dans `results/` :
 
-Générez les fichiers de configuration avec le flag d'activation CUDA, puis lancez la compilation :
-bash
-# 1. Configuration CMake avec support CUDA
-cmake -S . -B build \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DGGML_CUDA=ON \
-    -DLLAMA_BUILD_SERVER=ON \
-    -DLLAMA_BUILD_TESTS=OFF \
-    -DLLAMA_BUILD_EXAMPLES=OFF \
-    -DLLAMA_BUILD_APP=OFF \
-    -DLLAMA_USE_PREBUILT_UI=ON \
-    -DLLAMA_OPENSSL=ON
-
-# 2. Build du serveur
-cmake --build build --parallel $(nproc) --target llama-server
-Utilisez le code avec précaution.
-
-Étape 6 : Lancer le serveur en mode Hybride optimisé
-
-Comme la version Q3_K_M ne pèse que 2,4 Go, nous pouvons tenter de pousser 16 couches (sur les 20 du modèle) directement dans la VRAM de votre carte graphique.
-bash
-./build/bin/llama-server \
-    -m ../dory-q3_k_m.gguf \
-    --alias dory \
-    --host 127.0.0.1 --port 8080 \
-    -ngl 16 \
-    -t 4 \
-    --ctx-size 4096 --parallel 1 \
-    --batch-size 512 --ubatch-size 512 \
-    --cache-type-k f16 --cache-type-v f16 \
-    --flash-attn off \
-    --no-context-shift \
-    --jinja --reasoning on \
-    --temp 1.0 --top-p 0.95 --top-k 0 --min-p 0 --repeat-penalty 1 \
-    --override-kv "dory.num_loops=int:2,dory.recurrent_kv_cache_mode=str:last_loop"
-Utilisez le code avec précaution.
-Une fois le téléchargement Ollama terminé, dites-moi :
-• Si la commande ln -s a bien réussi à lier le fichier (vérifiez avec un rapide ls -lh ../dory-q3_k_m.gguf).
-• Si vous observez un message d'erreur "Out of VRAM" au lancement du serveur (si c'est le cas, nous baisserons simplement le paramètre -ngl 16 à 12).
-
+```bash
+python3 run_ifeval.py \
+  --server llama.cpp-dory/build-cuda/bin/llama-server \
+  --model models/NVIDIA-Nemotron-Labs-Dory1.0-4B-Q5_K_M.gguf \
+  --gpu-layers auto --fit-target 256 \
+  --loops 2 --limit 16 --max-tokens 512
 ```
 
-## Installation locale validée
+`run_ollama_ifeval.py` utilise la même sélection de prompts via l'API locale
+d'Ollama. Il est employé pour comparer `qwen3.5:9b` et `bonsai-2:4b` à Dory.
 
-- Fork Dory de llama.cpp : `brianchmielNV/llama.cpp`
-- Révision : `98a74c97ea09ac72f6ceda1559808fc0a2f447ce`
-- Compilation CPU : `dory/llama.cpp-dory/build-cpu/bin/`
-- Outils : `llama-bench` et `llama-quantize`
+```bash
+python3 run_ollama_ifeval.py qwen3.5:9b
+```
 
-### Modèles
-
-| Quantification | Fichier | Taille | Provenance |
-|---|---|---:|---|
-| Q5_K_M | `models/NVIDIA-Nemotron-Labs-Dory1.0-4B-Q5_K_M.gguf` | 3,673,288,864 octets | Export NVIDIA, SHA-256 vérifié |
-| Q3_K_M | `models/NVIDIA-Nemotron-Labs-Dory1.0-4B-Q3_K_M.gguf` | 1,86 Gio | Requantifié localement depuis le Q5 |
-
-NVIDIA ne distribue actuellement que le Q5_K_M. Le Q3_K_M a donc été créé
-localement avec `llama-quantize --allow-requantize`; il sert à réduire
-l'occupation mémoire et ses résultats peuvent être moins fidèles qu'un Q3
-quantifié directement depuis les poids BF16.
-
-### Benchmark CPU
-
-Machine : Intel Core i7-8750H (6 cœurs physiques), CPU uniquement, 6 threads,
-3 répétitions, contexte de 128 tokens et génération de 64 tokens.
-
-| Quantification | Traitement du prompt | Génération |
-|---|---:|---:|
-| Q5_K_M | 14,76 ± 0,99 tok/s | 3,34 ± 0,06 tok/s |
-| Q3_K_M | 15,04 ± 0,35 tok/s | 4,45 ± 0,12 tok/s |
-
-Le rapport brut est disponible dans [`benchmark.md`](benchmark.md).
-
-## IFEval GPU (échantillon)
-
-Échantillon déterministe de 16 prompts IFEval, Q3_K_M, 512 tokens maximum,
-contexte 4 096, cache `per_loop`, 193/193 couches sur une GTX 1060 3 Go.
-
-| Boucles | Strict (prompts) | Relâché (prompts) | Pic RAM | Pic VRAM |
-|---:|---:|---:|---:|---:|
-| 1 | 37,5 % | 43,75 % | 3,01 Gio | 2 479 Mio |
-| 2 | 43,75 % | 50,0 % | 3,62 Gio | 2 805 Mio |
-| 4 | 37,5 % | 37,5 % | 4,70 Gio | 2 923 Mio |
-
-Cette mesure est un échantillon, pas le score IFEval officiel complet de 541
-prompts. Le meilleur compromis sur cet échantillon est deux boucles.
+Les modèles, build products, jeux de réponses et résultats générés sont exclus
+de Git. Le rapport brut CPU est dans [`benchmark.md`](benchmark.md).
