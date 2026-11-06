@@ -57,6 +57,26 @@ des scores IFEval officiels complets.
 il égale le Q5 à 4 boucles avec moins de RAM et de calcul. Bonsai consomme
 moins de VRAM, mais reste en retrait de 12,5 points sur le score strict.
 
+## CoDa 1.7B (diffusion, code)
+
+CoDa est publié uniquement en FP32 (8,12 Go) et ne peut pas être exécuté
+directement sur la machine. `run_coda_benchmark.py` le charge en NF4 4 bits à
+l'exécution, avec l'attention SDPA math compatible Pascal.
+
+| Mesure | Résultat |
+|---|---:|
+| Chargement | 586 s |
+| Génération moyenne | 20,0 s |
+| Pic RAM du processus | 5,43 Gio |
+| Pic VRAM | 2 079 Mio |
+| Prompts de code | 4 |
+
+À 64 étapes de diffusion et 128 tokens, les sorties sont mitigées : `add` est
+correct, `is_palindrome` est presque correct mais omet l'import `re`, et les
+deux autres sorties sont invalides ou tronquées. Ce microbenchmark mesure la
+faisabilité et la latence ; il ne remplace pas HumanEval, dont le protocole
+officiel (768 étapes et BF16) n'est pas compatible avec cette machine.
+
 ## Reproduire les évaluations
 
 `run_ifeval.py` démarre un serveur Dory, évalue les prompts et conserve les
@@ -75,6 +95,12 @@ d'Ollama. Il désactive le raisonnement pour obtenir les réponses finales.
 
 ```bash
 python3 run_ollama_ifeval.py qwen3.5:9b
+```
+
+Le runtime CoDa isolé est stocké sur `D:`. Après son installation, lancer :
+
+```bash
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 run_coda_benchmark.py
 ```
 
 Les modèles, build products, jeux de réponses et résultats générés sont exclus
