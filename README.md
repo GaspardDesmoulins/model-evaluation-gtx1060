@@ -136,5 +136,37 @@ Pour exporter CoDa en NF4 persistant :
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 export_coda_nf4.py
 ```
 
+## Tester CoDa manuellement
+
+Le serveur local charge l'export NF4 et expose une API compatible avec
+`/v1/chat/completions`. Il écoute uniquement sur la machine locale :
+
+```bash
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
+python3 serve_coda.py --steps 64 --max-tokens 128
+```
+
+Vérifier sa disponibilité :
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Envoyer une requête de code :
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role": "user", "content": "Write only Python code for add(a, b)."}],
+    "max_tokens": 128,
+    "diffusion_steps": 64
+  }'
+```
+
+Le serveur traite une requête à la fois sur la GTX 1060. CoDa reste spécialisé
+code ; 64 étapes est le compromis pratique et 256 étapes est beaucoup plus
+lent sans amélioration mesurée sur les tâches généralistes.
+
 Les modèles, build products, jeux de réponses et résultats générés sont exclus
 de Git. Le rapport brut CPU est dans [`benchmark.md`](benchmark.md).
