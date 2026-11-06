@@ -49,10 +49,13 @@ des scores IFEval officiels complets.
 | Dory Q5 | 2 | 56,25 % | 56,25 % | 5,69 Gio | 2 275 Mio |
 | Dory Q5 | 4 | 56,25 % | 56,25 % | 6,18 Gio | 2 275 Mio |
 | Bonsai-2 4B Q2_0 | — | 43,75 % | 50,0 % | — | 1 693 Mio |
+| Qwen3.5 9B | — | 62,5 % | 68,75 % | — | 1 459 Mio |
 
-**Recommandation actuelle : Dory Q5 à 2 boucles.** Il égale le Q5 à 4 boucles
-sur cet échantillon, avec moins de RAM et de calcul. Bonsai consomme moins de
-VRAM, mais reste en retrait de 12,5 points sur le score strict.
+**Meilleure qualité mesurée : Qwen3.5 9B.** Il dépasse Dory Q5 à 2 boucles de
+6,25 points sur le score strict, mais son premier chargement a pris environ
+76 secondes. Dory Q5 à 2 boucles reste l'option plus légère et prévisible :
+il égale le Q5 à 4 boucles avec moins de RAM et de calcul. Bonsai consomme
+moins de VRAM, mais reste en retrait de 12,5 points sur le score strict.
 
 ## Reproduire les évaluations
 
@@ -68,11 +71,10 @@ python3 run_ifeval.py \
 ```
 
 `run_ollama_ifeval.py` utilise la même sélection de prompts via l'API locale
-d'Ollama. Il désactive le raisonnement pour obtenir les réponses finales,
-notamment avec `bonsai-2:4b`.
+d'Ollama. Il désactive le raisonnement pour obtenir les réponses finales.
 
 ```bash
-python3 run_ollama_ifeval.py bonsai-2:4b
+python3 run_ollama_ifeval.py qwen3.5:9b
 ```
 
 Les modèles, build products, jeux de réponses et résultats générés sont exclus
