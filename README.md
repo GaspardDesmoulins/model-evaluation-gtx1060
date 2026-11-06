@@ -92,6 +92,11 @@ L'export NF4 persistant validé est stocké dans
 `/mnt/d/dory/models/CoDA-v0-Instruct-NF4`. Il occupe 2,05 Go et se recharge en
 14,4 s, contre 8 min 13 s depuis les poids FP32.
 
+Un essai FP32 hybride avec 6 blocs GPU, 17 blocs RAM et 5 blocs sur disque a
+validé un passage avant, mais a culminé à 3 548 Mio de VRAM et 6,06 Gio de RAM.
+Ce dépassement de la VRAM physique et la faible marge RAM excluent un placement
+FP32 entièrement en GPU+RAM sur cette machine.
+
 ## Reproduire les évaluations
 
 `run_ifeval.py` démarre un serveur Dory, évalue les prompts et conserve les

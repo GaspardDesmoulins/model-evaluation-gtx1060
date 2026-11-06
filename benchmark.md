@@ -80,3 +80,18 @@ Le checkpoint FP32 de 8,12 Go a été chargé une fois puis sauvegardé en NF4 s
 | Chargement FP32 → NF4 | Export | Rechargement NF4 | Taille exportée |
 |---:|---:|---:|---:|
 | 8 min 13 s | 22,2 s | 14,4 s | 2,05 Go |
+
+## Test CoDa FP32 hybride
+
+Un passage avant FP32 a été validé avec l'embedding et 6 blocs sur GPU, 17
+blocs en RAM et 5 blocs offloadés sur `D:`. La génération diffusion échoue
+ensuite dans les hooks de dispatch d'Accelerate, incompatibles avec cette
+architecture personnalisée.
+
+| Pic VRAM | Pic RAM | Passage avant | Conclusion |
+|---:|---:|---:|---|
+| 3 548 Mio | 6,06 Gio | 53,4 s | Dépasse les 3 Gio physiques de VRAM |
+
+Ajouter les 5 blocs disque en RAM laisserait une marge inférieure à 1 Gio pour
+WSL et les activations. Ce placement n'est donc pas tenté afin d'éviter une
+OOM ; le checkpoint NF4 persistant reste la configuration exploitable.
