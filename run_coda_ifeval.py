@@ -45,6 +45,7 @@ quantization = BitsAndBytesConfig(
     bnb_4bit_quant_type="nf4",
 )
 
+benchmark_start = time.perf_counter()
 load_start = time.perf_counter()
 model = AutoModelForCausalLM.from_pretrained(
     args.model,
@@ -57,7 +58,7 @@ model = AutoModelForCausalLM.from_pretrained(
 load_seconds = time.perf_counter() - load_start
 tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
-out = ROOT / "results" / "ifeval-coda-1.7b-4bit"
+out = ROOT / "results" / f"ifeval-coda-1.7b-4bit-{args.steps}steps"
 out.mkdir(parents=True, exist_ok=True)
 (out / "inputs.jsonl").write_text("".join(json.dumps(item) + "\n" for item in inputs))
 
@@ -115,6 +116,7 @@ for mode in ("strict", "loose"):
             "max_tokens": args.max_tokens,
             "diffusion_steps": args.steps,
             "load_seconds": load_seconds,
+            "total_seconds": time.perf_counter() - benchmark_start,
             "mean_generation_seconds": sum(
                 item["generation_seconds"] for item in responses
             )

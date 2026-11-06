@@ -50,7 +50,8 @@ des scores IFEval officiels complets.
 | Dory Q5 | 4 | 56,25 % | 56,25 % | 6,18 Gio | 2 275 Mio |
 | Bonsai-2 4B Q2_0 | — | 43,75 % | 50,0 % | — | 1 693 Mio |
 | Qwen3.5 9B | — | 62,5 % | 68,75 % | — | 1 459 Mio |
-| CoDa 1.7B NF4 | — | 0 % | 0 % | 5,43 Gio | 2 447 Mio |
+| CoDa 1.7B NF4 | 64 étapes | 0 % | 0 % | 5,43 Gio | 2 447 Mio |
+| CoDa 1.7B NF4 | 256 étapes | 0 % | 0 % | 5,43 Gio | 2 447 Mio |
 
 **Meilleure qualité mesurée : Qwen3.5 9B.** Il dépasse Dory Q5 à 2 boucles de
 6,25 points sur le score strict, mais son premier chargement a pris environ
@@ -66,8 +67,8 @@ l'exécution, avec l'attention SDPA math compatible Pascal.
 
 | Mesure | Résultat |
 |---|---:|
-| Chargement | 586 s |
-| Génération moyenne | 20,0 s |
+| Chargement depuis FP32 | 586 s (64 étapes), 524 s (256 étapes) |
+| Génération moyenne | 20,0 s (64 étapes), 77,7 s (256 étapes) |
 | Pic RAM du processus | 5,43 Gio |
 | Pic VRAM | 2 079 Mio |
 | Prompts de code | 4 |
@@ -76,12 +77,20 @@ l'exécution, avec l'attention SDPA math compatible Pascal.
 correct, `is_palindrome` est presque correct mais omet l'import `re`, et les
 deux autres sorties sont invalides ou tronquées. Ce microbenchmark mesure la
 faisabilité et la latence ; il ne remplace pas HumanEval, dont le protocole
-officiel (768 étapes et BF16) n'est pas compatible avec cette machine.
+officiel (768 étapes et BF16) n'est pas compatible avec cette machine. À 256
+étapes, seul `add` est correct : l'augmentation du nombre d'étapes ne résout
+pas les sorties vides ou invalides.
 
 Sur le même échantillon IFEval de 16 prompts que les autres modèles, à 64
 étapes et 512 tokens, CoDa atteint 0 % strict et relâché. Huit réponses sont
 vides et aucune ne satisfait toutes les contraintes. CoDa ne constitue donc
 pas une alternative généraliste pratique à Dory, Bonsai ou Qwen sur ce matériel.
+À 256 étapes, le score reste nul, avec une génération moyenne de 237 s par
+prompt et une durée totale de 1 h 10 min 56 s.
+
+L'export NF4 persistant validé est stocké dans
+`/mnt/d/dory/models/CoDA-v0-Instruct-NF4`. Il occupe 2,05 Go et se recharge en
+14,4 s, contre 8 min 13 s depuis les poids FP32.
 
 ## Reproduire les évaluations
 
@@ -109,10 +118,22 @@ Le runtime CoDa isolé est stocké sur `D:`. Après son installation, lancer :
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 run_coda_benchmark.py
 ```
 
+Le benchmark code commun à Dory et Ollama est lancé ainsi :
+
+```bash
+python3 run_code_benchmark.py ollama --model qwen3.5:9b --name qwen3.5-9b
+```
+
 Pour le même échantillon IFEval que les autres modèles :
 
 ```bash
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 run_coda_ifeval.py
+```
+
+Pour exporter CoDa en NF4 persistant :
+
+```bash
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 export_coda_nf4.py
 ```
 
 Les modèles, build products, jeux de réponses et résultats générés sont exclus

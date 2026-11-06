@@ -13,15 +13,11 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
+from code_benchmark_prompts import PROMPTS
+
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MODEL = Path("/mnt/d/dory/models/CoDA-v0-Instruct")
-PROMPTS = [
-    "Write only Python code for a function add(a: int, b: int) -> int that returns the sum of its arguments.",
-    "Write only Python code for a function is_palindrome(text: str) -> bool that ignores case and spaces.",
-    "Write only Python code for a function fibonacci(n: int) -> int that returns the nth Fibonacci number iteratively.",
-    "Write only Python code for a function unique_sorted(values: list[int]) -> list[int] that returns sorted unique values.",
-]
 
 
 parser = argparse.ArgumentParser()
@@ -42,6 +38,7 @@ quantization = BitsAndBytesConfig(
     bnb_4bit_quant_type="nf4",
 )
 
+benchmark_start = time.perf_counter()
 load_start = time.perf_counter()
 model = AutoModelForCausalLM.from_pretrained(
     args.model,
@@ -75,7 +72,7 @@ for prompt in PROMPTS:
         }
     )
 
-out = ROOT / "results" / "coda-1.7b-4bit"
+out = ROOT / "results" / f"coda-1.7b-4bit-{args.steps}steps"
 out.mkdir(parents=True, exist_ok=True)
 (out / "responses.json").write_text(json.dumps(responses, indent=2) + "\n")
 (out / "summary.json").write_text(
@@ -88,6 +85,7 @@ out.mkdir(parents=True, exist_ok=True)
             "max_new_tokens": args.max_new_tokens,
             "sample_size": len(PROMPTS),
             "load_seconds": load_seconds,
+            "total_seconds": time.perf_counter() - benchmark_start,
             "mean_generation_seconds": sum(
                 item["generation_seconds"] for item in responses
             )
