@@ -50,6 +50,7 @@ des scores IFEval officiels complets.
 | Dory Q5 | 4 | 56,25 % | 56,25 % | 6,18 Gio | 2 275 Mio |
 | Bonsai-2 4B Q2_0 | — | 43,75 % | 50,0 % | — | 1 693 Mio |
 | Qwen3.5 9B | — | 62,5 % | 68,75 % | — | 1 459 Mio |
+| CoDa 1.7B NF4 | — | 0 % | 0 % | 5,43 Gio | 2 447 Mio |
 
 **Meilleure qualité mesurée : Qwen3.5 9B.** Il dépasse Dory Q5 à 2 boucles de
 6,25 points sur le score strict, mais son premier chargement a pris environ
@@ -77,6 +78,11 @@ deux autres sorties sont invalides ou tronquées. Ce microbenchmark mesure la
 faisabilité et la latence ; il ne remplace pas HumanEval, dont le protocole
 officiel (768 étapes et BF16) n'est pas compatible avec cette machine.
 
+Sur le même échantillon IFEval de 16 prompts que les autres modèles, à 64
+étapes et 512 tokens, CoDa atteint 0 % strict et relâché. Huit réponses sont
+vides et aucune ne satisfait toutes les contraintes. CoDa ne constitue donc
+pas une alternative généraliste pratique à Dory, Bonsai ou Qwen sur ce matériel.
+
 ## Reproduire les évaluations
 
 `run_ifeval.py` démarre un serveur Dory, évalue les prompts et conserve les
@@ -101,6 +107,12 @@ Le runtime CoDa isolé est stocké sur `D:`. Après son installation, lancer :
 
 ```bash
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 run_coda_benchmark.py
+```
+
+Pour le même échantillon IFEval que les autres modèles :
+
+```bash
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 run_coda_ifeval.py
 ```
 
 Les modèles, build products, jeux de réponses et résultats générés sont exclus
