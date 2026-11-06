@@ -95,7 +95,12 @@ L'export NF4 persistant validé est stocké dans
 Un essai FP32 hybride avec 6 blocs GPU, 17 blocs RAM et 5 blocs sur disque a
 validé un passage avant, mais a culminé à 3 548 Mio de VRAM et 6,06 Gio de RAM.
 Ce dépassement de la VRAM physique et la faible marge RAM excluent un placement
-FP32 entièrement en GPU+RAM sur cette machine.
+FP32 entièrement en GPU+RAM robuste sur cette machine. Un second essai sans disque (6
+blocs GPU, 22 blocs RAM) a aussi chargé sans OOM et exécuté un passage avant en
+4,85 s, mais a atteint 6,71 Gio de RAM. Les deux placements échouent pendant
+la génération diffusion à cause d'une incompatibilité du dispatch
+multi-périphérique d'Accelerate avec CoDa ; aucun benchmark FP32 fiable n'est
+donc possible.
 
 ## Reproduire les évaluations
 

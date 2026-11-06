@@ -4,6 +4,7 @@
 import json
 import resource
 import time
+import argparse
 from pathlib import Path
 
 import torch
@@ -13,7 +14,13 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 SOURCE = Path("/mnt/d/dory/models/CoDA-v0-Instruct")
 OFFLOAD = Path("/mnt/d/dory/models/CoDA-FP32-offload")
-RESULT = Path("/home/gaspard/dory/results/coda-fp32-offload")
+RESULT_ROOT = Path("/home/gaspard/dory/results")
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--gpu-layers", type=int, default=6)
+parser.add_argument("--disk-layers", type=int, default=5)
+parser.add_argument("--diffusion-test", action="store_true")
+args = parser.parse_args()
 
 
 def load_config():
@@ -26,12 +33,16 @@ def load_config():
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is required for the FP32 offload test.")
 
+if not 0 <= args.gpu_layers <= 28 or not 0 <= args.disk_layers <= 28 - args.gpu_layers:
+    raise ValueError("Invalid GPU or disk layer count")
+
+cpu_end = 28 - args.disk_layers
 device_map = {
     "model.embed_tokens": 0,
     "model.rotary_emb": 0,
-    **{f"model.layers.{index}": 0 for index in range(6)},
-    **{f"model.layers.{index}": "cpu" for index in range(6, 23)},
-    **{f"model.layers.{index}": "disk" for index in range(23, 28)},
+    **{f"model.layers.{index}": 0 for index in range(args.gpu_layers)},
+    **{f"model.layers.{index}": "cpu" for index in range(args.gpu_layers, cpu_end)},
+    **{f"model.layers.{index}": "disk" for index in range(cpu_end, 28)},
     "model.norm": "cpu",
     "lm_head": "cpu",
 }
@@ -59,18 +70,35 @@ with torch.inference_mode():
     logits, _ = model(input_ids=inputs.input_ids)
 forward_seconds = time.perf_counter() - forward_start
 
-RESULT.mkdir(parents=True, exist_ok=True)
+result = RESULT_ROOT / f"coda-fp32-gpu{args.gpu_layers}-disk{args.disk_layers}"
+result.mkdir(parents=True, exist_ok=True)
 summary = {
     "source": str(SOURCE),
     "dtype": "float32",
-    "gpu_layers": 6,
-    "cpu_layers": 17,
-    "disk_layers": 5,
+    "gpu_layers": args.gpu_layers,
+    "cpu_layers": cpu_end - args.gpu_layers,
+    "disk_layers": args.disk_layers,
     "load_seconds": load_seconds,
     "forward_seconds": forward_seconds,
     "logits_shape": list(logits.shape),
     "peak_vram_mib": torch.cuda.max_memory_allocated() / 1024**2,
     "peak_process_ram_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
 }
-(RESULT / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+(result / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+
+if args.diffusion_test:
+    generation_start = time.perf_counter()
+    with torch.inference_mode():
+        output = model.diffusion_generate(
+            inputs=inputs.input_ids,
+            max_new_tokens=16,
+            steps=4,
+            temperature=0.0,
+        )
+    summary["diffusion_generation_seconds"] = time.perf_counter() - generation_start
+    summary["response"] = tokenizer.decode(output[0], skip_special_tokens=True)
+    summary["peak_vram_mib"] = torch.cuda.max_memory_allocated() / 1024**2
+    summary["peak_process_ram_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
+(result / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
 print(json.dumps(summary, indent=2))
