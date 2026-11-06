@@ -92,9 +92,12 @@ architecture personnalisée.
 |---|---:|---:|---:|---|
 | 6 GPU, 17 RAM, 5 disque | 3 548 Mio | 6,06 Gio | 53,4 s | Échec du dispatch |
 | 6 GPU, 22 RAM, 0 disque | 3 548 Mio | 6,71 Gio | 4,85 s | Échec du dispatch |
+| 0 GPU, 28 RAM, chargement direct | 0 Mio | 7,45 Gio | 421,1 s | 64 étapes / 128 tokens : 172,8 s |
+| 8 GPU, 20 RAM, transferts manuels | 2 749 Mio | 8,77 Gio | 135,0 s | 64 étapes / 128 tokens : 146,5 s |
 
-Le placement sans disque a été tenté sans OOM, mais ne laisse qu'une marge RAM
-très faible. Dans les deux cas, Accelerate retourne 34 logits pour un masque de
-35 positions pendant le débruitage, ce qui empêche la génération. Les
-benchmarks FP32 ne sont donc pas exécutables de façon fiable ; le checkpoint
-NF4 persistant reste la configuration exploitable.
+Les deux premiers essais utilisent `Accelerate`, qui retourne 34 logits pour un
+masque de 35 positions pendant le débruitage. Le chargement direct en RAM
+résout ce défaut ; huit blocs peuvent ensuite être déplacés manuellement sur la
+GTX 1060, tandis que les activations sont transférées explicitement une seule
+fois vers les blocs CPU. La génération GPU hybride est valide, mais le gain à
+64 étapes reste modeste et la qualité de CoDa demeure insuffisante.

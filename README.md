@@ -92,15 +92,19 @@ L'export NF4 persistant validé est stocké dans
 `/mnt/d/dory/models/CoDA-v0-Instruct-NF4`. Il occupe 2,05 Go et se recharge en
 14,4 s, contre 8 min 13 s depuis les poids FP32.
 
-Un essai FP32 hybride avec 6 blocs GPU, 17 blocs RAM et 5 blocs sur disque a
-validé un passage avant, mais a culminé à 3 548 Mio de VRAM et 6,06 Gio de RAM.
-Ce dépassement de la VRAM physique et la faible marge RAM excluent un placement
-FP32 entièrement en GPU+RAM robuste sur cette machine. Un second essai sans disque (6
-blocs GPU, 22 blocs RAM) a aussi chargé sans OOM et exécuté un passage avant en
-4,85 s, mais a atteint 6,71 Gio de RAM. Les deux placements échouent pendant
-la génération diffusion à cause d'une incompatibilité du dispatch
-multi-périphérique d'Accelerate avec CoDa ; aucun benchmark FP32 fiable n'est
-donc possible.
+Le dispatch hybride d'Accelerate tronque les logits pendant la génération
+diffusion et ne peut pas être utilisé. Avec les 11 Gio de RAM WSL, le modèle
+FP32 se charge directement en RAM puis le script déplace manuellement
+l'embedding et les 8 premiers blocs sur GPU. Les activations ne traversent la
+frontière GPU/CPU qu'une fois ; le générateur diffusion utilise les indices sur
+le périphérique des logits, ce qui évite l'erreur de masque.
+
+Ce placement 8 GPU / 20 RAM effectue 64 étapes sans OOM, avec 2 749 Mio de
+VRAM et 8 980 Mio de RAM au pic. La génération de 128 tokens prend 146,5 s,
+mais cette exécution de validation a produit une réponse vide ; elle valide le
+placement GPU, pas la qualité de CoDa. Le script de validation est
+`test_coda_fp32_offload.py --manual-gpu-layers 8 --diffusion-test --steps 64
+--max-new-tokens 128`.
 
 ## Reproduire les évaluations
 
