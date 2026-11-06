@@ -30,7 +30,8 @@ def chat(prompt):
     request = urllib.request.Request(
         "http://127.0.0.1:11434/api/chat",
         data=json.dumps({"model": args.model, "messages": [{"role": "user", "content": prompt}],
-                         "stream": False, "options": {"temperature": 0, "num_predict": args.max_tokens}}).encode(),
+                         "stream": False, "think": False,
+                         "options": {"temperature": 0, "num_predict": args.max_tokens}}).encode(),
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=900) as response:
