@@ -50,8 +50,15 @@ class Model:
         self.waiting = threading.Event()
         self.release = threading.Event()
         self.fail = False
+        self.failure = None
+        self.temperature = None
+        self.logits_hook = None
 
     def diffusion_generate(self, inputs, max_new_tokens, steps, temperature, **kwargs):
+        self.temperature = temperature
+        self.logits_hook = kwargs.get("generation_logits_hook_func")
+        if self.failure:
+            raise self.failure
         if self.fail:
             raise RuntimeError("generation failed")
         hook = kwargs.get("generation_tokens_hook_func")
@@ -79,10 +86,18 @@ class DummyServer:
 class StreamingTests(unittest.TestCase):
     def setUp(self):
         self.model = Model()
+        namespace = self.load_module("nf4")
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), namespace["Handler"])
+        self.thread = threading.Thread(target=self.server.serve_forever)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def load_module(self, precision):
         config = types.SimpleNamespace(auto_map={}, num_hidden_layers=28)
         fake_torch = types.ModuleType("torch")
         fake_torch.cuda = types.SimpleNamespace(is_available=lambda: True)
         fake_torch.float32 = object()
+        fake_torch.finfo = lambda dtype: types.SimpleNamespace(tiny=1.1754943508222875e-38)
         fake_torch.inference_mode = contextlib.nullcontext
         fake_transformers = types.ModuleType("transformers")
         fake_transformers.AutoConfig = types.SimpleNamespace(
@@ -96,22 +111,25 @@ class StreamingTests(unittest.TestCase):
         )
         fake_hybrid = types.ModuleType("coda_fp32_hybrid")
         fake_hybrid.place_hybrid = lambda *args, **kwargs: None
+        fake_nf4 = types.ModuleType("coda_nf4")
+        fake_nf4.NonFiniteLogitsError = type("NonFiniteLogitsError", (RuntimeError,), {})
+        self.nonfinite_error = fake_nf4.NonFiniteLogitsError
+        fake_nf4.stable_logits = lambda tokens, logits, mask_token_id: logits
+        fake_nf4.configure_nf4 = lambda model: setattr(model, "fp32_activations", True)
         modules = {
             "torch": fake_torch,
             "transformers": fake_transformers,
             "coda_fp32_hybrid": fake_hybrid,
+            "coda_nf4": fake_nf4,
         }
         with (
             mock.patch.dict(sys.modules, modules),
             mock.patch("http.server.ThreadingHTTPServer", DummyServer),
-            mock.patch.object(sys, "argv", ["serve_coda.py"]),
+            mock.patch.object(sys, "argv", ["serve_coda.py", "--precision", precision]),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             namespace = runpy.run_path(str(Path(__file__).with_name("serve_coda.py")))
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), namespace["Handler"])
-        self.thread = threading.Thread(target=self.server.serve_forever)
-        self.thread.start()
-        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        return namespace
 
     def tearDown(self):
         self.model.release.set()
@@ -136,7 +154,7 @@ class StreamingTests(unittest.TestCase):
         return event_type, json.loads(data)
 
     def test_intermediate_states_arrive_before_generation_finishes(self):
-        with self.request("/api/diffusion", diffusion_steps=2) as response:
+        with self.request("/api/diffusion", diffusion_steps=2, temperature=0.7) as response:
             self.assertEqual(self.event(response), ("start", {"steps": 2}))
             self.assertEqual(
                 self.event(response),
@@ -147,6 +165,8 @@ class StreamingTests(unittest.TestCase):
                 ("progress", {"step": 1, "steps": 2, "text": "A[MASK]"}),
             )
             self.assertTrue(self.model.waiting.wait(timeout=2))
+            self.assertEqual(self.model.temperature, 0.7)
+            self.assertIsNotNone(self.model.logits_hook)
             self.model.release.set()
             self.assertEqual(
                 self.event(response),
@@ -170,6 +190,34 @@ class StreamingTests(unittest.TestCase):
         with self.request("/api/diffusion", diffusion_steps=2) as response:
             self.assertEqual(self.event(response), ("start", {"steps": 2}))
             self.assertEqual(self.event(response), ("error", {"error": "generation failed"}))
+
+    def test_nf4_temperature_and_logits_hook(self):
+        self.assertTrue(self.model.fp32_activations)
+        with self.request("/v1/chat/completions", temperature=0.7) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(self.model.temperature, 0.7)
+        self.assertIsNotNone(self.model.logits_hook)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request("/v1/chat/completions", temperature=1e-40)
+        self.assertEqual(error.exception.code, 400)
+
+    def test_nonfinite_logits_are_reported_by_both_routes(self):
+        self.model.failure = self.nonfinite_error("non-finite logits")
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request("/v1/chat/completions", temperature=0.7)
+        self.assertEqual(error.exception.code, 500)
+        self.assertEqual(json.load(error.exception), {"error": "non-finite logits"})
+        with self.request("/api/diffusion", temperature=0.7) as response:
+            self.assertEqual(self.event(response)[0], "start")
+            self.assertEqual(self.event(response), ("error", {"error": "non-finite logits"}))
+
+    def test_fp32_does_not_use_nf4_hooks(self):
+        self.model = Model()
+        namespace = self.load_module("fp32")
+        namespace["generate"]("P", 2, 2, 0.7)
+        self.assertFalse(hasattr(self.model, "fp32_activations"))
+        self.assertIsNone(self.model.logits_hook)
+        self.assertEqual(self.model.temperature, 0.7)
 
 
 if __name__ == "__main__":

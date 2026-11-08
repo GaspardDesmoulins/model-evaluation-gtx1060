@@ -16,10 +16,12 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from coda_fp32_hybrid import place_hybrid
+from coda_nf4 import NonFiniteLogitsError, configure_nf4, stable_logits
 
 DEFAULT_NF4_MODEL = Path("/mnt/d/dory/models/CoDA-v0-Instruct-NF4")
 DEFAULT_FP32_MODEL = Path("/mnt/d/dory/models/CoDA-v0-Instruct")
 CHAT_PAGE = Path(__file__).with_name("coda_chat.html")
+NF4_MIN_TEMPERATURE = torch.finfo(torch.float32).tiny
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", type=Path)
@@ -36,8 +38,8 @@ if args.steps < 1 or args.max_tokens < 1:
     parser.error("--steps and --max-tokens must be positive")
 if not math.isfinite(args.temperature) or args.temperature < 0:
     parser.error("--temperature must be finite and non-negative")
-if args.precision == "nf4" and args.temperature != 0:
-    parser.error("NF4 only supports temperature 0 on this runtime")
+if args.precision == "nf4" and 0 < args.temperature < NF4_MIN_TEMPERATURE:
+    parser.error(f"NF4 temperature must be 0 or at least {NF4_MIN_TEMPERATURE}")
 
 if args.model is None:
     args.model = DEFAULT_FP32_MODEL if args.precision == "fp32" else DEFAULT_NF4_MODEL
@@ -71,6 +73,7 @@ else:
         device_map={"": 0},
         low_cpu_mem_usage=True,
     )
+    configure_nf4(model)
     input_device = "cuda"
 print("CoDa : chargement du tokenizer...", flush=True)
 tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
@@ -81,6 +84,10 @@ def generate(prompt, max_tokens, steps, temperature, on_step=None):
     inputs = tokenizer(prompt, return_tensors="pt").to(input_device)
     started = time.perf_counter()
     generation_kwargs = {}
+    if args.precision == "nf4":
+        generation_kwargs["generation_logits_hook_func"] = (
+            lambda step, tokens, logits: stable_logits(tokens, logits, model.mask_token_id)
+        )
     if on_step is not None:
         prompt_length = inputs.input_ids.shape[-1]
 
@@ -175,8 +182,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("max_tokens and diffusion_steps must be positive")
             if not math.isfinite(temperature) or temperature < 0:
                 raise ValueError("temperature must be finite and non-negative")
-            if args.precision == "nf4" and temperature != 0:
-                raise ValueError("NF4 only supports temperature 0 on this runtime")
+            if args.precision == "nf4" and 0 < temperature < NF4_MIN_TEMPERATURE:
+                raise ValueError(
+                    f"NF4 temperature must be 0 or at least {NF4_MIN_TEMPERATURE}"
+                )
         except (KeyError, StopIteration, TypeError, ValueError, OverflowError) as error:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
@@ -217,9 +226,13 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             return
 
-        completion, generated_tokens, elapsed = generate(
-            prompt, max_tokens, steps, temperature
-        )
+        try:
+            completion, generated_tokens, elapsed = generate(
+                prompt, max_tokens, steps, temperature
+            )
+        except NonFiniteLogitsError as error:
+            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})
+            return
         self.send_json(
             HTTPStatus.OK,
             {

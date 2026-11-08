@@ -50,7 +50,9 @@ sur seize sont vides ; son résultat IFEval ne permet donc pas de le
 recommander pour les tâches généralistes. Son exécution complète dure 25 min
 16 s : 9 min 32 s de chargement, puis 16 générations à 59,0 s de moyenne.
 À 256 étapes, le score reste nul et la génération prend 237 s par prompt en
-moyenne.
+moyenne. Ces essais NF4 utilisaient les scripts de benchmark avec calcul
+quantifié FP16, avant le correctif FP32 du serveur ; leurs résultats ne
+mesurent donc pas la version actuelle du serveur.
 
 Les scripts Dory et Ollama antérieurs ne sauvegardaient pas la durée
 chronométrée. Les débits Dory sont reconstitués à partir des 16 mesures du
@@ -127,6 +129,20 @@ Le test à 768 étapes a utilisé un seul prompt demandant une fonction `add`.
 Le chargement a pris 37,8 s, puis la génération 29 min 02 s. La réponse
 contient une fonction correcte suivie d'une balise Markdown fermante isolée.
 Ce n'est pas un benchmark HumanEval ni une comparaison statistique de qualité.
+
+## Vérification ponctuelle du serveur CoDa NF4
+
+Avec les poids NF4 sur GPU et le correctif de calcul FP32, deux requêtes JSON
+de 16 étapes et 16 tokens, à température 0 puis 0,7, se sont terminées sans
+erreur. Un essai en flux à température 0,7, 64 étapes et 128 tokens, s'est
+terminé en 24,1 s avec une réponse vide ; le pic GPU observé par
+`nvidia-smi` pendant ces requêtes était de 2 483 Mio. Cette mesure concerne
+l'ensemble du GPU et dépend notamment de la longueur et du matériel.
+
+Douze essais courts à température 0,7 ont également été effectués directement
+sur le modèle avec le calcul des couches NF4 en FP32, sans logits non finis
+détectés. Ce contrôle réduit ne constitue ni un benchmark de qualité ni une
+garantie de stabilité pour d'autres entrées ou séquences plus longues.
 
 ## Reproduire les évaluations
 

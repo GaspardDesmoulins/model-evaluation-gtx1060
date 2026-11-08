@@ -30,7 +30,6 @@
       <label>Tokens max. <input id="max-tokens" type="number" min="1" step="1" required></label>
       <label>Température <input id="temperature" type="number" min="0" step="any" required></label>
     </div>
-    <p id="temperature-note"></p>
     <button id="send" type="submit" disabled>Envoyer</button>
     <span id="status" role="status"></span>
   </form>
@@ -55,11 +54,6 @@
         steps.value = config.steps;
         maxTokens.value = config.max_tokens;
         temperature.value = config.temperature;
-        if (config.precision === "nf4") {
-          temperature.disabled = true;
-          document.getElementById("temperature-note").textContent =
-            "La température reste à 0 en NF4 : l'échantillonnage peut échouer sur ce GPU.";
-        }
         button.disabled = false;
       } catch (error) {
         status.textContent = `Impossible de charger la configuration : ${error.message}`;

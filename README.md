@@ -113,13 +113,14 @@ Lancer le serveur :
 ```bash
 cd /home/gaspard/dory
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
-python3 serve_coda.py --steps 64 --max-tokens 128
+python3 serve_coda.py --steps 64 --max-tokens 128 --temperature 0.7
 ```
 
 Attendre le message `CoDa ready`, puis ouvrir <http://127.0.0.1:8000/> dans un
 navigateur. La page affiche les échanges, mais chaque question est indépendante :
 le serveur ne transmet pas l'historique au modèle. Arrêter le serveur avec
-`Ctrl+C`.
+`Ctrl+C`. Sans `--temperature`, la valeur par défaut est `0` ; la page permet
+aussi de la changer pour chaque requête.
 
 Pendant la génération, la page affiche le texte à chaque étape de diffusion.
 `[MASK]` représente une position encore masquée ; le texte intermédiaire peut
@@ -180,7 +181,7 @@ observées figurent dans [`benchmark.md`](benchmark.md).
 | `--gpu-layers` | `8` | En FP32 uniquement, entier de 0 à 28 pour ce modèle. Même à 0, l'embedding reste sur GPU. Huit blocs ont été testés sur la GTX 1060 ; davantage peut dépasser la VRAM disponible. Ignoré en NF4. |
 | `--steps` | `64` | Entier positif, nombre d'étapes de diffusion. Aucun maximum n'est imposé par le serveur ; le temps augmente fortement avec le nombre d'étapes. |
 | `--max-tokens` | `128` | Entier positif, limite de tokens générés par requête. Aucun maximum n'est imposé par le serveur ; une valeur élevée consomme davantage de mémoire et de temps. |
-| `--temperature` | `0` | Nombre fini positif ou nul en FP32 ; `0` uniquement en NF4, car une température non nulle a provoqué une erreur CUDA. |
+| `--temperature` | `0` | Nombre fini positif ou nul. En NF4, utiliser `0` ou au moins `1.1754943508222875e-38` (plus petit nombre FP32 normal). |
 | `--host` | `127.0.0.1` | Adresse d'écoute. Garder l'adresse locale : le serveur n'a pas d'authentification. |
 | `--port` | `8000` | Port TCP local disponible, par exemple `8001`. Adapter l'URL dans le navigateur. |
 
@@ -189,6 +190,21 @@ maximum et la température pour chaque message. Ces réglages ne modifient pas
 les valeurs par défaut du serveur. L'API accepte les champs correspondants
 `diffusion_steps`, `max_tokens` et `temperature` avec les mêmes limites ;
 `GET /api/config` renvoie les valeurs par défaut et le modèle chargé.
+
+En NF4, les poids restent sur GPU et les activations résiduelles sont
+calculées en FP32 ; les opérations des couches quantifiées utilisent aussi le
+calcul FP32, afin d'éviter les débordements FP16 observés. L'entrée de la tête
+de sortie est convertie dans le type de ses poids. Borner les activations à la
+plage FP16 perdrait de l'information et n'empêcherait pas nécessairement les
+débordements à l'intérieur des couches.
+
+Les logits sont vérifiés puis convertis en FP32 avant l'échantillonnage. Si des
+valeurs non finies persistent sur les positions masquées, l'API JSON renvoie
+une erreur HTTP 500 et le flux de diffusion un événement `error`, plutôt que
+de poursuivre l'échantillonnage. Ces changements peuvent augmenter l'utilisation
+de mémoire et le temps de calcul ; ils ne garantissent pas la stabilité sur
+toutes les entrées. Une génération peut aussi se terminer avec une réponse
+vide, même sans erreur numérique.
 
 Les limites ci-dessus sont celles du logiciel, pas une garantie que toute
 combinaison tienne en mémoire. Le serveur traite une génération à la fois,
