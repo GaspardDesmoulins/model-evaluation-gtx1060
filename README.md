@@ -182,14 +182,41 @@ observées figurent dans [`benchmark.md`](benchmark.md).
 | `--steps` | `64` | Entier positif, nombre d'étapes de diffusion. Aucun maximum n'est imposé par le serveur ; le temps augmente fortement avec le nombre d'étapes. |
 | `--max-tokens` | `128` | Entier positif, limite de tokens générés par requête. Aucun maximum n'est imposé par le serveur ; une valeur élevée consomme davantage de mémoire et de temps. |
 | `--temperature` | `0` | Nombre fini positif ou nul. En NF4, utiliser `0` ou au moins `1.1754943508222875e-38` (plus petit nombre FP32 normal). |
+| `--remask-probability` | `0` | Probabilité initiale de remasquage, nombre fini entre `0` et `1` inclus. `0` désactive cette option expérimentale. |
 | `--host` | `127.0.0.1` | Adresse d'écoute. Garder l'adresse locale : le serveur n'a pas d'authentification. |
 | `--port` | `8000` | Port TCP local disponible, par exemple `8001`. Adapter l'URL dans le navigateur. |
 
 La page web affiche le modèle et permet de modifier les étapes, les tokens
-maximum et la température pour chaque message. Ces réglages ne modifient pas
-les valeurs par défaut du serveur. L'API accepte les champs correspondants
-`diffusion_steps`, `max_tokens` et `temperature` avec les mêmes limites ;
-`GET /api/config` renvoie les valeurs par défaut et le modèle chargé.
+maximum, la température et le remasquage pour chaque message. Ces réglages ne
+modifient pas les valeurs par défaut du serveur. L'API accepte les champs
+correspondants `diffusion_steps`, `max_tokens`, `temperature` et
+`remask_probability` avec les mêmes limites ; `GET /api/config` renvoie les
+valeurs par défaut et le modèle chargé.
+
+Le remasquage fonctionne en NF4 et en FP32 hybride. Après chaque étape sauf la
+dernière, chaque position générée peut être remasquée avec la probabilité
+`p₀ × exp(-5 × i / (étapes - 1))`, où `p₀` est la valeur réglée et `i` le
+numéro d'étape à partir de zéro. Le prompt n'est pas remasqué ; les positions
+remasquées peuvent être à nouveau échantillonnées aux étapes suivantes. Si une
+seule étape est demandée, aucun remasquage n'est effectué.
+
+Pour un essai visuel rapide, lancer le serveur puis observer les événements
+`progress` et les `[MASK]` :
+
+```bash
+curl --fail --no-buffer http://127.0.0.1:8000/api/diffusion \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role": "user", "content": "Explain why the sky is blue."}],
+    "max_tokens": 32, "diffusion_steps": 16, "temperature": 0.7,
+    "remask_probability": 0.8
+  }'
+```
+
+Répéter avec `remask_probability` à `0` pour observer le comportement
+habituel. Ces générations sont aléatoires : une comparaison de deux réponses
+ne démontre pas une amélioration de qualité. Le remasquage peut modifier le
+temps de génération ou produire une réponse moins bonne.
 
 En NF4, les poids restent sur GPU et les activations résiduelles sont
 calculées en FP32 ; les opérations des couches quantifiées utilisent aussi le

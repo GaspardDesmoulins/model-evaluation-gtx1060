@@ -29,7 +29,9 @@
       <label>Étapes <input id="steps" type="number" min="1" step="1" required></label>
       <label>Tokens max. <input id="max-tokens" type="number" min="1" step="1" required></label>
       <label>Température <input id="temperature" type="number" min="0" step="any" required></label>
+      <label>Remasquage initial (0–1) <input id="remask-probability" type="number" min="0" max="1" step="any" required></label>
     </div>
+    <p>Remasquage : 0 désactive l'option ; la probabilité diminue à chaque étape.</p>
     <button id="send" type="submit" disabled>Envoyer</button>
     <span id="status" role="status"></span>
   </form>
@@ -42,6 +44,7 @@
     const steps = document.getElementById("steps");
     const maxTokens = document.getElementById("max-tokens");
     const temperature = document.getElementById("temperature");
+    const remaskProbability = document.getElementById("remask-probability");
 
     async function loadConfig() {
       try {
@@ -54,6 +57,7 @@
         steps.value = config.steps;
         maxTokens.value = config.max_tokens;
         temperature.value = config.temperature;
+        remaskProbability.value = config.remask_probability;
         button.disabled = false;
       } catch (error) {
         status.textContent = `Impossible de charger la configuration : ${error.message}`;
@@ -92,6 +96,7 @@
             diffusion_steps: Number(steps.value),
             max_tokens: Number(maxTokens.value),
             temperature: Number(temperature.value),
+            remask_probability: Number(remaskProbability.value),
           }),
         });
         if (!response.ok) {

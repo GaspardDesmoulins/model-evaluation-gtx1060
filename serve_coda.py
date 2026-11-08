@@ -17,6 +17,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from coda_fp32_hybrid import place_hybrid
 from coda_nf4 import NonFiniteLogitsError, configure_nf4, stable_logits
+from coda_remask import remask_tokens
 
 DEFAULT_NF4_MODEL = Path("/mnt/d/dory/models/CoDA-v0-Instruct-NF4")
 DEFAULT_FP32_MODEL = Path("/mnt/d/dory/models/CoDA-v0-Instruct")
@@ -32,6 +33,7 @@ parser.add_argument("--port", type=int, default=8000)
 parser.add_argument("--steps", type=int, default=64)
 parser.add_argument("--max-tokens", type=int, default=128)
 parser.add_argument("--temperature", type=float, default=0.0)
+parser.add_argument("--remask-probability", type=float, default=0.0)
 args = parser.parse_args()
 
 if args.steps < 1 or args.max_tokens < 1:
@@ -40,6 +42,8 @@ if not math.isfinite(args.temperature) or args.temperature < 0:
     parser.error("--temperature must be finite and non-negative")
 if args.precision == "nf4" and 0 < args.temperature < NF4_MIN_TEMPERATURE:
     parser.error(f"NF4 temperature must be 0 or at least {NF4_MIN_TEMPERATURE}")
+if not math.isfinite(args.remask_probability) or not 0 <= args.remask_probability <= 1:
+    parser.error("--remask-probability must be finite and between 0 and 1")
 
 if args.model is None:
     args.model = DEFAULT_FP32_MODEL if args.precision == "fp32" else DEFAULT_NF4_MODEL
@@ -80,7 +84,7 @@ tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 generation_lock = threading.Lock()
 
 
-def generate(prompt, max_tokens, steps, temperature, on_step=None):
+def generate(prompt, max_tokens, steps, temperature, on_step=None, remask_probability=0.0):
     inputs = tokenizer(prompt, return_tensors="pt").to(input_device)
     started = time.perf_counter()
     generation_kwargs = {}
@@ -88,24 +92,30 @@ def generate(prompt, max_tokens, steps, temperature, on_step=None):
         generation_kwargs["generation_logits_hook_func"] = (
             lambda step, tokens, logits: stable_logits(tokens, logits, model.mask_token_id)
         )
-    if on_step is not None:
+    if on_step is not None or remask_probability:
         prompt_length = inputs.input_ids.shape[-1]
 
         def tokens_hook(step, tokens, logits):
-            token_ids = tokens[0, prompt_length:].detach().cpu().tolist()
-            parts = []
-            unmasked = []
-            for token_id in token_ids:
-                if token_id == model.mask_token_id:
-                    if unmasked:
-                        parts.append(tokenizer.decode(unmasked, skip_special_tokens=True))
-                        unmasked = []
-                    parts.append("[MASK]")
-                else:
-                    unmasked.append(token_id)
-            if unmasked:
-                parts.append(tokenizer.decode(unmasked, skip_special_tokens=True))
-            on_step(0 if step is None else step + 1, "".join(parts))
+            if remask_probability:
+                remask_tokens(
+                    tokens, prompt_length, model.mask_token_id, step, steps,
+                    remask_probability,
+                )
+            if on_step is not None:
+                token_ids = tokens[0, prompt_length:].detach().cpu().tolist()
+                parts = []
+                unmasked = []
+                for token_id in token_ids:
+                    if token_id == model.mask_token_id:
+                        if unmasked:
+                            parts.append(tokenizer.decode(unmasked, skip_special_tokens=True))
+                            unmasked = []
+                        parts.append("[MASK]")
+                    else:
+                        unmasked.append(token_id)
+                if unmasked:
+                    parts.append(tokenizer.decode(unmasked, skip_special_tokens=True))
+                on_step(0 if step is None else step + 1, "".join(parts))
             return tokens
 
         generation_kwargs["generation_tokens_hook_func"] = tokens_hook
@@ -157,6 +167,7 @@ class Handler(BaseHTTPRequestHandler):
                     "steps": args.steps,
                     "max_tokens": args.max_tokens,
                     "temperature": args.temperature,
+                    "remask_probability": args.remask_probability,
                 },
             )
             return
@@ -178,6 +189,9 @@ class Handler(BaseHTTPRequestHandler):
             max_tokens = int(payload.get("max_tokens", args.max_tokens))
             steps = int(payload.get("diffusion_steps", args.steps))
             temperature = float(payload.get("temperature", args.temperature))
+            remask_probability = float(
+                payload.get("remask_probability", args.remask_probability)
+            )
             if max_tokens < 1 or steps < 1:
                 raise ValueError("max_tokens and diffusion_steps must be positive")
             if not math.isfinite(temperature) or temperature < 0:
@@ -186,6 +200,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError(
                     f"NF4 temperature must be 0 or at least {NF4_MIN_TEMPERATURE}"
                 )
+            if not math.isfinite(remask_probability) or not 0 <= remask_probability <= 1:
+                raise ValueError("remask_probability must be finite and between 0 and 1")
         except (KeyError, StopIteration, TypeError, ValueError, OverflowError) as error:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
@@ -211,6 +227,7 @@ class Handler(BaseHTTPRequestHandler):
                     on_step=lambda step, text: send_event(
                         "progress", {"step": step, "steps": steps, "text": text}
                     ),
+                    remask_probability=remask_probability,
                 )
                 send_event("done", {
                     "text": completion,
@@ -228,7 +245,8 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             completion, generated_tokens, elapsed = generate(
-                prompt, max_tokens, steps, temperature
+                prompt, max_tokens, steps, temperature,
+                remask_probability=remask_probability,
             )
         except NonFiniteLogitsError as error:
             self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})

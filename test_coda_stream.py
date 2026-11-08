@@ -116,11 +116,21 @@ class StreamingTests(unittest.TestCase):
         self.nonfinite_error = fake_nf4.NonFiniteLogitsError
         fake_nf4.stable_logits = lambda tokens, logits, mask_token_id: logits
         fake_nf4.configure_nf4 = lambda model: setattr(model, "fp32_activations", True)
+        fake_remask = types.ModuleType("coda_remask")
+
+        def remask(tokens, prompt_length, mask_token_id, step, steps, probability):
+            if step is not None and step < steps - 1:
+                tokens.ids[prompt_length] = mask_token_id
+            return tokens
+
+        fake_remask.remask_tokens = mock.Mock(side_effect=remask)
+        self.remask = fake_remask.remask_tokens
         modules = {
             "torch": fake_torch,
             "transformers": fake_transformers,
             "coda_fp32_hybrid": fake_hybrid,
             "coda_nf4": fake_nf4,
+            "coda_remask": fake_remask,
         }
         with (
             mock.patch.dict(sys.modules, modules),
@@ -218,6 +228,38 @@ class StreamingTests(unittest.TestCase):
         self.assertFalse(hasattr(self.model, "fp32_activations"))
         self.assertIsNone(self.model.logits_hook)
         self.assertEqual(self.model.temperature, 0.7)
+        self.model.release.set()
+        namespace["generate"]("P", 2, 2, 0.7, remask_probability=1)
+        self.assertEqual(self.remask.call_count, 3)
+
+    def test_remasking_is_applied_to_json_and_stream(self):
+        self.model.release.set()
+        with self.request("/v1/chat/completions", diffusion_steps=2, remask_probability=1) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(self.remask.call_count, 3)
+        self.remask.reset_mock()
+        with self.request("/api/diffusion", diffusion_steps=2, remask_probability=1) as response:
+            self.assertEqual(self.event(response)[0], "start")
+            self.assertEqual(self.event(response)[1]["text"], "[MASK][MASK]")
+            self.assertEqual(self.event(response)[1]["text"], "[MASK][MASK]")
+            self.assertEqual(self.event(response)[1]["text"], "AB")
+            self.assertEqual(self.event(response)[0], "done")
+        self.assertEqual(self.remask.call_count, 3)
+
+    def test_remasking_is_available_in_web_config(self):
+        with urllib.request.urlopen(self.url + "/api/config", timeout=5) as response:
+            config = json.load(response)
+        self.assertEqual(config["remask_probability"], 0)
+        with urllib.request.urlopen(self.url + "/", timeout=5) as response:
+            page = response.read().decode()
+        self.assertIn('id="remask-probability" type="number" min="0" max="1"', page)
+        self.assertIn("remask_probability: Number(remaskProbability.value)", page)
+
+    def test_invalid_remask_probability_is_rejected(self):
+        for value in (-0.1, 1.1, "nan", "inf"):
+            with self.subTest(value=value), self.assertRaises(urllib.error.HTTPError) as error:
+                self.request("/api/diffusion", remask_probability=value)
+            self.assertEqual(error.exception.code, 400)
 
 
 if __name__ == "__main__":
