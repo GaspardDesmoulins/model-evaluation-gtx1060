@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CoDa local</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+    #messages { display: grid; gap: 1rem; }
+    .message { border: 1px solid #ccc; border-radius: .5rem; padding: .8rem; }
+    .message pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .5rem 0 0; }
+    textarea { box-sizing: border-box; width: 100%; min-height: 7rem; font: inherit; }
+    .settings { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
+    .settings input { display: block; width: 7rem; font: inherit; }
+    button { font: inherit; padding: .4rem 1rem; }
+    #status { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>CoDa local</h1>
+  <p id="model">Chargement des informations du modèle…</p>
+  <p>Chaque question est indépendante : CoDa ne reçoit pas l'historique affiché.</p>
+  <div id="messages" aria-live="polite"></div>
+  <form id="chat">
+    <label for="prompt">Votre message</label>
+    <textarea id="prompt" required></textarea>
+    <div class="settings">
+      <label>Étapes <input id="steps" type="number" min="1" step="1" required></label>
+      <label>Tokens max. <input id="max-tokens" type="number" min="1" step="1" required></label>
+      <label>Température <input id="temperature" type="number" min="0" step="any" required></label>
+    </div>
+    <p id="temperature-note"></p>
+    <button id="send" type="submit" disabled>Envoyer</button>
+    <span id="status" role="status"></span>
+  </form>
+  <script>
+    const form = document.getElementById("chat");
+    const prompt = document.getElementById("prompt");
+    const button = document.getElementById("send");
+    const status = document.getElementById("status");
+    const messages = document.getElementById("messages");
+    const steps = document.getElementById("steps");
+    const maxTokens = document.getElementById("max-tokens");
+    const temperature = document.getElementById("temperature");
+
+    async function loadConfig() {
+      try {
+        const response = await fetch("/api/config");
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const config = await response.json();
+        const placement = config.gpu_layers === null ? "" : `, ${config.gpu_layers} blocs GPU`;
+        document.getElementById("model").textContent =
+          `Modèle : ${config.model} (${config.precision.toUpperCase()}${placement})`;
+        steps.value = config.steps;
+        maxTokens.value = config.max_tokens;
+        temperature.value = config.temperature;
+        if (config.precision === "nf4") {
+          temperature.disabled = true;
+          document.getElementById("temperature-note").textContent =
+            "La température reste à 0 en NF4 : l'échantillonnage peut échouer sur ce GPU.";
+        }
+        button.disabled = false;
+      } catch (error) {
+        status.textContent = `Impossible de charger la configuration : ${error.message}`;
+      }
+    }
+
+    loadConfig();
+
+    function appendMessage(label, text) {
+      const message = document.createElement("div");
+      message.className = "message";
+      const title = document.createElement("strong");
+      title.textContent = label;
+      const content = document.createElement("pre");
+      content.textContent = text;
+      message.append(title, content);
+      messages.append(message);
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = prompt.value.trim();
+      if (!text) return;
+      appendMessage("Vous", text);
+      prompt.value = "";
+      button.disabled = true;
+      status.textContent = "Génération en cours…";
+      try {
+        const response = await fetch("/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: text }],
+            diffusion_steps: Number(steps.value),
+            max_tokens: Number(maxTokens.value),
+            temperature: Number(temperature.value),
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        appendMessage("CoDa", data.choices[0].message.content || "(Réponse vide)");
+        status.textContent = "";
+      } catch (error) {
+        status.textContent = `Erreur : ${error.message}`;
+      } finally {
+        button.disabled = false;
+        prompt.focus();
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Serve the persistent CoDa NF4 checkpoint through a local chat endpoint."""
+"""Serve CoDa NF4 or hybrid FP32 through a local chat endpoint."""
 
 import argparse
 import json
+import math
 import threading
 import time
 from http import HTTPStatus
@@ -12,16 +13,32 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
+from coda_fp32_hybrid import place_hybrid
 
-DEFAULT_MODEL = Path("/mnt/d/dory/models/CoDA-v0-Instruct-NF4")
+DEFAULT_NF4_MODEL = Path("/mnt/d/dory/models/CoDA-v0-Instruct-NF4")
+DEFAULT_FP32_MODEL = Path("/mnt/d/dory/models/CoDA-v0-Instruct")
+CHAT_PAGE = Path(__file__).with_name("coda_chat.html")
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+parser.add_argument("--model", type=Path)
+parser.add_argument("--precision", choices=("nf4", "fp32"), default="nf4")
+parser.add_argument("--gpu-layers", type=int, default=8)
 parser.add_argument("--host", default="127.0.0.1")
 parser.add_argument("--port", type=int, default=8000)
 parser.add_argument("--steps", type=int, default=64)
 parser.add_argument("--max-tokens", type=int, default=128)
+parser.add_argument("--temperature", type=float, default=0.0)
 args = parser.parse_args()
+
+if args.steps < 1 or args.max_tokens < 1:
+    parser.error("--steps and --max-tokens must be positive")
+if not math.isfinite(args.temperature) or args.temperature < 0:
+    parser.error("--temperature must be finite and non-negative")
+if args.precision == "nf4" and args.temperature != 0:
+    parser.error("NF4 only supports temperature 0 on this runtime")
+
+if args.model is None:
+    args.model = DEFAULT_FP32_MODEL if args.precision == "fp32" else DEFAULT_NF4_MODEL
 
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is required for the CoDa server.")
@@ -29,26 +46,40 @@ if not torch.cuda.is_available():
 config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
 config.attention_kernel = "math"
 config.auto_map["AutoModelForCausalLM"] = "modeling_coda.CoDALanguageModel"
-model = AutoModelForCausalLM.from_pretrained(
-    args.model,
-    config=config,
-    trust_remote_code=True,
-    device_map={"": 0},
-    low_cpu_mem_usage=True,
-)
+if args.precision == "fp32":
+    if not 0 <= args.gpu_layers <= config.num_hidden_layers:
+        parser.error(f"--gpu-layers must be between 0 and {config.num_hidden_layers}")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        config=config,
+        trust_remote_code=True,
+        torch_dtype=torch.float32,
+        low_cpu_mem_usage=True,
+    )
+    place_hybrid(model, args.gpu_layers)
+    input_device = "cpu"
+else:
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        config=config,
+        trust_remote_code=True,
+        device_map={"": 0},
+        low_cpu_mem_usage=True,
+    )
+    input_device = "cuda"
 tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 generation_lock = threading.Lock()
 
 
-def generate(prompt, max_tokens, steps):
-    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
+def generate(prompt, max_tokens, steps, temperature):
+    inputs = tokenizer(prompt, return_tensors="pt").to(input_device)
     started = time.perf_counter()
     with generation_lock, torch.inference_mode():
         output = model.diffusion_generate(
             inputs=inputs.input_ids,
             max_new_tokens=max_tokens,
             steps=steps,
-            temperature=0.0,
+            temperature=temperature,
         )
     text = tokenizer.decode(output[0], skip_special_tokens=True)
     completion = text.removeprefix(prompt).strip()
@@ -68,8 +99,29 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == "/":
+            body = CHAT_PAGE.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/health":
             self.send_json(HTTPStatus.OK, {"status": "ok"})
+            return
+        if self.path == "/api/config":
+            self.send_json(
+                HTTPStatus.OK,
+                {
+                    "model": args.model.name,
+                    "precision": args.precision,
+                    "gpu_layers": args.gpu_layers if args.precision == "fp32" else None,
+                    "steps": args.steps,
+                    "max_tokens": args.max_tokens,
+                    "temperature": args.temperature,
+                },
+            )
             return
         self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -88,20 +140,27 @@ class Handler(BaseHTTPRequestHandler):
             )
             max_tokens = int(payload.get("max_tokens", args.max_tokens))
             steps = int(payload.get("diffusion_steps", args.steps))
+            temperature = float(payload.get("temperature", args.temperature))
             if max_tokens < 1 or steps < 1:
                 raise ValueError("max_tokens and diffusion_steps must be positive")
-        except (KeyError, StopIteration, TypeError, ValueError, json.JSONDecodeError) as error:
+            if not math.isfinite(temperature) or temperature < 0:
+                raise ValueError("temperature must be finite and non-negative")
+            if args.precision == "nf4" and temperature != 0:
+                raise ValueError("NF4 only supports temperature 0 on this runtime")
+        except (KeyError, StopIteration, TypeError, ValueError, OverflowError) as error:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
 
-        completion, generated_tokens, elapsed = generate(prompt, max_tokens, steps)
+        completion, generated_tokens, elapsed = generate(
+            prompt, max_tokens, steps, temperature
+        )
         self.send_json(
             HTTPStatus.OK,
             {
                 "id": f"coda-{time.time_ns()}",
                 "object": "chat.completion",
                 "created": int(time.time()),
-                "model": "CoDA-v0-Instruct-NF4",
+                "model": args.model.name,
                 "choices": [
                     {
                         "index": 0,

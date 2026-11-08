@@ -221,9 +221,15 @@ Le serveur charge l'export NF4 persistant et expose une API compatible avec
 `/v1/chat/completions` :
 
 ```bash
+cd /home/gaspard/dory
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
 python3 serve_coda.py --steps 64 --max-tokens 128
 ```
+
+Attendre le message `CoDa ready`, puis ouvrir <http://127.0.0.1:8000/> dans un
+navigateur. La page affiche les échanges, mais chaque question est indépendante :
+le serveur ne transmet pas l'historique au modèle. Arrêter le serveur avec
+`Ctrl+C`.
 
 Vérifier sa disponibilité :
 
@@ -243,22 +249,60 @@ curl http://127.0.0.1:8000/v1/chat/completions \
   }'
 ```
 
-Attendre le message `CoDa ready` avant les requêtes. Le serveur traite une
-requête à la fois sur la GTX 1060. Modifier `--steps 64` au démarrage ou
-`diffusion_steps` dans la requête pour essayer 256 ou 768 étapes ; plus
-d'étapes accroît fortement le temps de calcul. Les benchmarks NF4 ont utilisé
-64 et 256 étapes. Ce serveur ne fournit pas d'interface web et utilise
-uniquement le dernier message utilisateur ; un client de chat côté serveur peut
-appeler son API, mais le script ne gère pas CORS pour une page servie depuis
-une autre origine.
+### CoDa FP32 GPU + RAM
 
-### CoDa FP32 : tests sans serveur HTTP
+Arrêter tout autre modèle utilisant le GPU avant de lancer ce serveur :
 
-`serve_coda.py` ne prend pas en charge les placements FP32 CPU ou hybrides :
-le chargement direct sur GPU du checkpoint FP32 ne convient pas à cette GTX
-1060. Les commandes suivantes exécutent seulement le prompt de test intégré
-au script, puis s'arrêtent ; elles ne démarrent pas d'API et écrasent le
-`summary.json` du placement correspondant.
+```bash
+cd /home/gaspard/dory
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
+python3 serve_coda.py --precision fp32 --gpu-layers 8 --steps 64 --max-tokens 128
+```
+
+Après `CoDa ready`, ouvrir <http://127.0.0.1:8000/>. Le serveur charge les
+poids FP32 de `/mnt/d/dory/models/CoDA-v0-Instruct` directement en RAM, place
+l'embedding et les 8 premiers blocs sur GPU et conserve les 20 autres blocs
+sur CPU. `--gpu-layers` permet de réduire le nombre de blocs GPU ; `--model`
+peut remplacer le chemin du checkpoint. `--precision nf4` est le mode par
+défaut. Les autres options et l'API sont identiques au serveur NF4.
+
+Le placement à 8 blocs a atteint environ 2 749 Mio de VRAM et 8 985 Mio de
+RAM du processus avec 11 Gio de RAM WSL au total. Le système peut néanmoins
+recourir au swap et lire les poids depuis le disque. Ne pas utiliser les
+placements Accelerate pour la génération FP32 : ils ont échoué lors de nos
+essais.
+
+### Options et limites du serveur CoDa
+
+| Option | Défaut | Valeurs et limites |
+|---|---|---|
+| `--precision` | `nf4` | `nf4` ou `fp32`. NF4 charge l'export quantifié sur GPU ; FP32 utilise le placement hybride GPU/RAM. |
+| `--model` | Selon la précision | Chemin du checkpoint : `/mnt/d/dory/models/CoDA-v0-Instruct-NF4` en NF4, `/mnt/d/dory/models/CoDA-v0-Instruct` en FP32. Fournir un checkpoint correspondant à la précision ; cette option ne le convertit pas. |
+| `--gpu-layers` | `8` | En FP32 uniquement, entier de 0 à 28 pour ce modèle. Même à 0, l'embedding reste sur GPU. Huit blocs ont été testés sur la GTX 1060 ; davantage peut dépasser la VRAM disponible. Ignoré en NF4. |
+| `--steps` | `64` | Entier positif, nombre d'étapes de diffusion. Aucun maximum n'est imposé par le serveur ; le temps augmente fortement avec le nombre d'étapes. |
+| `--max-tokens` | `128` | Entier positif, limite de tokens générés par requête. Aucun maximum n'est imposé par le serveur ; une valeur élevée consomme davantage de mémoire et de temps. |
+| `--temperature` | `0` | Nombre fini positif ou nul en FP32 ; `0` uniquement en NF4, car une température non nulle a provoqué une erreur CUDA. |
+| `--host` | `127.0.0.1` | Adresse d'écoute. Garder l'adresse locale : le serveur n'a pas d'authentification. |
+| `--port` | `8000` | Port TCP local disponible, par exemple `8001`. Adapter l'URL dans le navigateur. |
+
+La page web affiche le modèle et permet de modifier les étapes, les tokens
+maximum et la température pour chaque message. Ces réglages ne modifient pas
+les valeurs par défaut du serveur. L'API accepte les champs correspondants
+`diffusion_steps`, `max_tokens` et `temperature` avec les mêmes limites ;
+`GET /api/config` renvoie les valeurs par défaut et le modèle chargé.
+
+Les limites ci-dessus sont celles du logiciel, pas une garantie que toute
+combinaison tienne en mémoire. À 64 étapes / 128 tokens, l'essai FP32 hybride
+a pris 146,5 s de génération ; à 768 étapes, environ 29 min pour un seul prompt.
+Le serveur traite une génération à la fois, sans transmission de l'historique :
+seul le dernier message utilisateur est utilisé. Il ne gère pas CORS pour une
+page servie depuis une autre origine.
+
+### Tests CoDa FP32 ponctuels
+
+Pour reproduire les tests ponctuels plutôt que démarrer un serveur, utiliser
+les commandes suivantes. Elles exécutent le prompt intégré au script, puis
+s'arrêtent et écrasent le `summary.json` du placement correspondant.
 
 FP32 entièrement CPU :
 
@@ -269,18 +313,21 @@ python3 test_coda_fp32_offload.py --cpu-only --diffusion-test \
 ```
 
 FP32 hybride, 8 blocs GPU et 20 blocs CPU, sans offload de poids explicite sur
-disque :
+disque. Pour un essai à 64 étapes :
 
 ```bash
+cd /home/gaspard/dory
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
 python3 test_coda_fp32_offload.py --manual-gpu-layers 8 --diffusion-test \
-  --steps 768 --max-new-tokens 128
+  --steps 64 --max-new-tokens 128
 ```
 
-Remplacer `768` par `64` pour le test plus court. Ces essais utilisent environ
-11 Gio de RAM WSL disponible au total ; le système peut néanmoins recourir au
-swap et lire les poids depuis le disque. Ne pas utiliser les placements
-Accelerate pour la génération FP32 : ils ont échoué lors de nos essais.
+`--manual-gpu-layers 8` place l'embedding et les 8 premiers blocs sur GPU,
+les 20 blocs restants en RAM ; réduire ce nombre réduit l'occupation GPU.
+`--diffusion-test` active la génération, `--steps` règle le nombre d'étapes
+et `--max-new-tokens` la longueur maximale générée. Remplacer `--steps 64`
+par `--steps 768` pour reproduire l'essai plus long. Sur le prompt intégré,
+celui-ci a pris environ 29 minutes de génération.
 
 Les modèles, build products, jeux de réponses et résultats générés sont exclus
 de Git. Le rapport brut CPU est dans [`benchmark.md`](benchmark.md).
