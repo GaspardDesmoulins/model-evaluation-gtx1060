@@ -5,16 +5,20 @@ import types
 import torch
 
 
-def place_hybrid(model, gpu_layers):
+def place_hybrid(model, gpu_layers, progress=None):
     backbone = model.model
     if not 0 <= gpu_layers <= len(backbone.layers):
         raise ValueError(f"gpu_layers must be between 0 and {len(backbone.layers)}")
 
     cuda_device = torch.device("cuda")
+    if progress is not None:
+        progress("CoDa : transfert de l'embedding sur GPU...")
     backbone.embed_tokens.to(cuda_device)
     backbone.rotary_emb.to(cuda_device)
-    for layer in list(backbone.layers)[:gpu_layers]:
+    for index, layer in enumerate(list(backbone.layers)[:gpu_layers], 1):
         layer.to(cuda_device)
+        if progress is not None:
+            progress(f"CoDa : blocs GPU transferes {index}/{gpu_layers}")
 
     def hybrid_forward(self, input_ids, **kwargs):
         hidden_states = backbone.embed_tokens(input_ids.to(cuda_device))

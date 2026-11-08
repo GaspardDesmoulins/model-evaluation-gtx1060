@@ -69,6 +69,18 @@ class HybridTests(unittest.TestCase):
             with self.subTest(gpu_layers=gpu_layers), self.assertRaises(ValueError):
                 coda_fp32_hybrid.place_hybrid(Model(), gpu_layers)
 
+    def test_progress_reports_transferred_layers(self):
+        torch_proxy = mock.Mock(wraps=torch)
+        torch_proxy.device.return_value = torch.device("cpu")
+        messages = []
+        with mock.patch.object(coda_fp32_hybrid, "torch", torch_proxy):
+            coda_fp32_hybrid.place_hybrid(Model(), 2, progress=messages.append)
+        self.assertIn("embedding", messages[0])
+        self.assertEqual(messages[1:], [
+            "CoDa : blocs GPU transferes 1/2",
+            "CoDa : blocs GPU transferes 2/2",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

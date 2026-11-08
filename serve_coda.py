@@ -10,6 +10,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+print("CoDa : initialisation du runtime Python et CUDA...", flush=True)
+
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
@@ -43,12 +45,14 @@ if args.model is None:
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is required for the CoDa server.")
 
+print(f"CoDa : lecture de la configuration ({args.model})...", flush=True)
 config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
 config.attention_kernel = "math"
 config.auto_map["AutoModelForCausalLM"] = "modeling_coda.CoDALanguageModel"
 if args.precision == "fp32":
     if not 0 <= args.gpu_layers <= config.num_hidden_layers:
         parser.error(f"--gpu-layers must be between 0 and {config.num_hidden_layers}")
+    print("CoDa : preparation des poids FP32 (lecture en RAM a la demande)...", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         config=config,
@@ -56,9 +60,10 @@ if args.precision == "fp32":
         torch_dtype=torch.float32,
         low_cpu_mem_usage=True,
     )
-    place_hybrid(model, args.gpu_layers)
+    place_hybrid(model, args.gpu_layers, progress=lambda message: print(message, flush=True))
     input_device = "cpu"
 else:
+    print("CoDa : chargement des poids NF4 sur GPU...", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         config=config,
@@ -67,19 +72,44 @@ else:
         low_cpu_mem_usage=True,
     )
     input_device = "cuda"
+print("CoDa : chargement du tokenizer...", flush=True)
 tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 generation_lock = threading.Lock()
 
 
-def generate(prompt, max_tokens, steps, temperature):
+def generate(prompt, max_tokens, steps, temperature, on_step=None):
     inputs = tokenizer(prompt, return_tensors="pt").to(input_device)
     started = time.perf_counter()
+    generation_kwargs = {}
+    if on_step is not None:
+        prompt_length = inputs.input_ids.shape[-1]
+
+        def tokens_hook(step, tokens, logits):
+            token_ids = tokens[0, prompt_length:].detach().cpu().tolist()
+            parts = []
+            unmasked = []
+            for token_id in token_ids:
+                if token_id == model.mask_token_id:
+                    if unmasked:
+                        parts.append(tokenizer.decode(unmasked, skip_special_tokens=True))
+                        unmasked = []
+                    parts.append("[MASK]")
+                else:
+                    unmasked.append(token_id)
+            if unmasked:
+                parts.append(tokenizer.decode(unmasked, skip_special_tokens=True))
+            on_step(0 if step is None else step + 1, "".join(parts))
+            return tokens
+
+        generation_kwargs["generation_tokens_hook_func"] = tokens_hook
+
     with generation_lock, torch.inference_mode():
         output = model.diffusion_generate(
             inputs=inputs.input_ids,
             max_new_tokens=max_tokens,
             steps=steps,
             temperature=temperature,
+            **generation_kwargs,
         )
     text = tokenizer.decode(output[0], skip_special_tokens=True)
     completion = text.removeprefix(prompt).strip()
@@ -126,7 +156,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self):
-        if self.path != "/v1/chat/completions":
+        if self.path not in ("/v1/chat/completions", "/api/diffusion"):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         try:
@@ -149,6 +179,42 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("NF4 only supports temperature 0 on this runtime")
         except (KeyError, StopIteration, TypeError, ValueError, OverflowError) as error:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return
+
+        if self.path == "/api/diffusion":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+
+            def send_event(event, data):
+                body = json.dumps(data, ensure_ascii=True)
+                self.wfile.write(f"event: {event}\ndata: {body}\n\n".encode("utf-8"))
+                self.wfile.flush()
+
+            try:
+                send_event("start", {"steps": steps})
+                completion, generated_tokens, elapsed = generate(
+                    prompt, max_tokens, steps, temperature,
+                    on_step=lambda step, text: send_event(
+                        "progress", {"step": step, "steps": steps, "text": text}
+                    ),
+                )
+                send_event("done", {
+                    "text": completion,
+                    "generated_tokens": generated_tokens,
+                    "generation_seconds": elapsed,
+                })
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            except Exception as error:
+                try:
+                    send_event("error", {"error": str(error)})
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    pass
             return
 
         completion, generated_tokens, elapsed = generate(

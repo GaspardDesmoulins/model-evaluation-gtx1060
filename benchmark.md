@@ -1,4 +1,11 @@
+# Benchmarks
+
+Machine testée : Intel Core i7-8750H (6 cœurs), GTX 1060 3 Gio, WSL avec
+8 Gio de RAM pour les premiers essais, puis 11 Gio pour les essais FP32.
+
 ## Débit Dory
+
+`llama-bench`, 6 threads, contexte de 128 tokens et génération de 64 tokens.
 
 | model                          |       size |     params | backend    | threads |            test |                  t/s |
 | ------------------------------ | ---------: | ---------: | ---------- | ------: | --------------: | -------------------: |
@@ -12,10 +19,13 @@ build: 98a74c97 (11551)
 Les mesures CUDA correspondantes, avec une GTX 1060 3 Go, sont de 166,01 tok/s
 en prompt et 4,13 tok/s en génération pour Dory Q3 entièrement offloadé, et de
 113,94 tok/s / 2,79 tok/s pour Dory Q5 hybride.
+Le GPU accélère le traitement du prompt ; la génération hybride du Q5 est
+cependant plus lente que sur CPU seul.
 
 ## IFEval
 
-Échantillon déterministe de 16 prompts, 512 tokens maximum et température 0.
+Échantillon déterministe de 16 des 541 prompts, 512 tokens maximum,
+contexte 4 096 et température 0.
 Ce ne sont pas des scores IFEval officiels complets.
 
 | Modèle | Réglage | Strict | Relâché | Prompt | Génération | Fenêtre IFEval | Pic RAM | Pic VRAM |
@@ -30,10 +40,17 @@ Ce ne sont pas des scores IFEval officiels complets.
 | CoDa 1.7B | NF4, 64 étapes | 0 % | 0 % | — | — | 25 min 16 s | 5,43 Gio | 2 447 Mio |
 | CoDa 1.7B | NF4, 256 étapes | 0 % | 0 % | — | — | 1 h 10 min 56 s | 5,43 Gio | 2 447 Mio |
 
+Qwen3.5 9B obtient le meilleur score strict sur cet échantillon, avec un
+premier chargement mesuré à environ 76 s. Dory Q5 à 2 boucles égale le score
+à 4 boucles avec moins de RAM et de calcul ; Bonsai reste en retrait de
+12,5 points sur le score strict par rapport au Q5 à 2 boucles.
+
 CoDa est un modèle de diffusion spécialisé code. À 64 étapes, huit réponses
 sur seize sont vides ; son résultat IFEval ne permet donc pas de le
 recommander pour les tâches généralistes. Son exécution complète dure 25 min
 16 s : 9 min 32 s de chargement, puis 16 générations à 59,0 s de moyenne.
+À 256 étapes, le score reste nul et la génération prend 237 s par prompt en
+moyenne.
 
 Les scripts Dory et Ollama antérieurs ne sauvegardaient pas la durée
 chronométrée. Les débits Dory sont reconstitués à partir des 16 mesures du
@@ -55,7 +72,8 @@ le chargement est la principale limite pratique.
 À 64 étapes, une sortie est correcte, une est presque correcte mais omet
 `import re`, et deux sont invalides ou tronquées. À 256 étapes, seule la
 fonction `add` est correcte : la qualité ne justifie pas le temps de calcul
-supplémentaire.
+supplémentaire. Ce microbenchmark ne reproduit pas le protocole HumanEval
+officiel à 768 étapes en BF16.
 
 ## Benchmark code commun
 
@@ -75,7 +93,8 @@ remplacement de HumanEval.
 ## Export CoDa NF4 persistant
 
 Le checkpoint FP32 de 8,12 Go a été chargé une fois puis sauvegardé en NF4 sur
-`D:`. L'export pèse 2,05 Go et a été validé par rechargement et génération.
+`D:` (`/mnt/d/dory/models/CoDA-v0-Instruct-NF4`). L'export pèse 2,05 Go et a
+été validé par rechargement et génération.
 
 | Chargement FP32 → NF4 | Export | Rechargement NF4 | Taille exportée |
 |---:|---:|---:|---:|
@@ -102,8 +121,70 @@ résout ce défaut ; huit blocs peuvent ensuite être déplacés manuellement su
 GTX 1060, tandis que les activations sont transférées explicitement une seule
 fois vers les blocs CPU. La génération GPU hybride est valide, mais le gain à
 64 étapes reste modeste et la qualité de CoDa demeure insuffisante.
+L'essai de génération à 64 étapes a produit une réponse vide.
 
 Le test à 768 étapes a utilisé un seul prompt demandant une fonction `add`.
 Le chargement a pris 37,8 s, puis la génération 29 min 02 s. La réponse
 contient une fonction correcte suivie d'une balise Markdown fermante isolée.
 Ce n'est pas un benchmark HumanEval ni une comparaison statistique de qualité.
+
+## Reproduire les évaluations
+
+Lancer les commandes depuis `/home/gaspard/dory` après avoir installé les
+dépendances et configuré l'environnement CUDA décrits dans le
+[README](README.md).
+
+IFEval Dory Q5, 2 boucles, sur 16 prompts :
+
+```bash
+python3 run_ifeval.py \
+  --server llama.cpp-dory/build-cuda/bin/llama-server \
+  --model models/NVIDIA-Nemotron-Labs-Dory1.0-4B-Q5_K_M.gguf \
+  --gpu-layers auto --fit-target 256 \
+  --loops 2 --limit 16 --max-tokens 512
+```
+
+Le script `run_ollama_ifeval.py` utilise la même sélection via l'API locale
+d'Ollama et désactive le raisonnement pour obtenir les réponses finales :
+
+```bash
+python3 run_ollama_ifeval.py qwen3.5:9b
+```
+
+Benchmarks CoDa code et IFEval avec le runtime isolé sur `D:` :
+
+```bash
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 run_coda_benchmark.py
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 run_coda_ifeval.py
+```
+
+Benchmark code commun via Ollama :
+
+```bash
+python3 run_code_benchmark.py ollama --model qwen3.5:9b --name qwen3.5-9b
+```
+
+### Tests CoDa FP32 ponctuels
+
+Ces commandes exécutent le prompt intégré, puis s'arrêtent et écrasent le
+`summary.json` du placement correspondant. FP32 entièrement CPU :
+
+```bash
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
+python3 test_coda_fp32_offload.py --cpu-only --diffusion-test \
+  --steps 64 --max-new-tokens 128
+```
+
+FP32 hybride, 8 blocs GPU et 20 blocs CPU, sans offload de poids explicite sur
+disque :
+
+```bash
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
+python3 test_coda_fp32_offload.py --manual-gpu-layers 8 --diffusion-test \
+  --steps 64 --max-new-tokens 128
+```
+
+Réduire `--manual-gpu-layers` réduit l'occupation GPU. `--diffusion-test`
+active la génération, `--steps` règle le nombre d'étapes et
+`--max-new-tokens` la longueur maximale. Remplacer `--steps 64` par
+`--steps 768` pour reproduire l'essai plus long.

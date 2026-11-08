@@ -20,6 +20,7 @@
   <h1>CoDa local</h1>
   <p id="model">Chargement des informations du modèle…</p>
   <p>Chaque question est indépendante : CoDa ne reçoit pas l'historique affiché.</p>
+  <p>La diffusion est affichée étape par étape ; [MASK] marque une position encore masquée.</p>
   <div id="messages" aria-live="polite"></div>
   <form id="chat">
     <label for="prompt">Votre message</label>
@@ -76,6 +77,7 @@
       content.textContent = text;
       message.append(title, content);
       messages.append(message);
+      return content;
     }
 
     form.addEventListener("submit", async (event) => {
@@ -86,8 +88,9 @@
       prompt.value = "";
       button.disabled = true;
       status.textContent = "Génération en cours…";
+      const output = appendMessage("CoDa", "En attente de la diffusion…");
       try {
-        const response = await fetch("/v1/chat/completions", {
+        const response = await fetch("/api/diffusion", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -97,9 +100,40 @@
             temperature: Number(temperature.value),
           }),
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-        appendMessage("CoDa", data.choices[0].message.content || "(Réponse vide)");
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+        if (!response.body) throw new Error("Flux de diffusion indisponible");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let completed = false;
+        while (true) {
+          const { value, done } = await reader.read();
+          buffer += decoder.decode(value, { stream: !done });
+          let boundary;
+          while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+            const event = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            const lines = event.split("\n");
+            const type = lines.find(line => line.startsWith("event: "))?.slice(7);
+            const payload = lines.find(line => line.startsWith("data: "))?.slice(6);
+            if (!type || !payload) continue;
+            const data = JSON.parse(payload);
+            if (type === "progress") {
+              output.textContent = data.text || "(Aucun texte visible)";
+              status.textContent = `Diffusion : étape ${data.step}/${data.steps}`;
+            } else if (type === "done") {
+              output.textContent = data.text || "(Réponse vide)";
+              completed = true;
+            } else if (type === "error") {
+              throw new Error(data.error || "Erreur de génération");
+            }
+          }
+          if (done) break;
+        }
+        if (!completed) throw new Error("Flux interrompu avant la fin de la génération");
         status.textContent = "";
       } catch (error) {
         status.textContent = `Erreur : ${error.message}`;
