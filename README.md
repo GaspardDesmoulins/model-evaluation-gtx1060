@@ -1,7 +1,8 @@
 # Évaluation locale de modèles sur GTX 1060
 
-Machine testée : Intel Core i7-8750H (6 cœurs), 8 Gio de RAM, NVIDIA GTX 1060
-(3 Gio de VRAM), WSL. Les artefacts lourds sont stockés sur `D:` :
+Machine testée : Intel Core i7-8750H (6 cœurs), NVIDIA GTX 1060 (3 Gio de
+VRAM), WSL avec 8 Gio de RAM pour les premiers tests, puis 11 Gio pour les
+derniers essais FP32. Les artefacts lourds sont stockés sur `D:` :
 `/mnt/d/dory`; `models/` est un lien vers ce répertoire.
 
 ## Installation validée
@@ -61,8 +62,8 @@ moins de VRAM, mais reste en retrait de 12,5 points sur le score strict.
 
 ## CoDa 1.7B (diffusion, code)
 
-CoDa est publié uniquement en FP32 (8,12 Go) et ne peut pas être exécuté
-directement sur la machine. `run_coda_benchmark.py` le charge en NF4 4 bits à
+CoDa est publié uniquement en FP32 (8,12 Go). Les premiers essais sur 8 Gio
+de RAM utilisent `run_coda_benchmark.py` pour le charger en NF4 4 bits à
 l'exécution, avec l'attention SDPA math compatible Pascal.
 
 | Mesure | Résultat |
@@ -77,7 +78,7 @@ l'exécution, avec l'attention SDPA math compatible Pascal.
 correct, `is_palindrome` est presque correct mais omet l'import `re`, et les
 deux autres sorties sont invalides ou tronquées. Ce microbenchmark mesure la
 faisabilité et la latence ; il ne remplace pas HumanEval, dont le protocole
-officiel (768 étapes et BF16) n'est pas compatible avec cette machine. À 256
+officiel (768 étapes et BF16) n'a pas été reproduit ici. À 256
 étapes, seul `add` est correct : l'augmentation du nombre d'étapes ne résout
 pas les sorties vides ou invalides.
 
@@ -105,6 +106,11 @@ mais cette exécution de validation a produit une réponse vide ; elle valide le
 placement GPU, pas la qualité de CoDa. Le script de validation est
 `test_coda_fp32_offload.py --manual-gpu-layers 8 --diffusion-test --steps 64
 --max-new-tokens 128`.
+
+À 768 étapes, un test FP32 hybride sur le seul prompt `add` a pris 29 min 02 s
+de génération, avec 2 749 Mio de VRAM et 8 985 Mio de RAM au pic. La fonction
+produite est correcte, mais suivie d'une balise Markdown fermante isolée. Ce
+test unique ne constitue pas un benchmark HumanEval.
 
 ## Reproduire les évaluations
 
@@ -150,10 +156,69 @@ Pour exporter CoDa en NF4 persistant :
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 export_coda_nf4.py
 ```
 
-## Tester CoDa manuellement
+## Servir les modèles sans Ollama
 
-Le serveur local charge l'export NF4 et expose une API compatible avec
-`/v1/chat/completions`. Il écoute uniquement sur la machine locale :
+Lancer les commandes depuis `/home/gaspard/dory`. Chaque serveur écoute
+uniquement sur `127.0.0.1` ; attendre la fin du chargement avant les requêtes.
+Arrêter le serveur avec `Ctrl+C` avant de lancer un autre modèle afin de libérer
+la mémoire GPU.
+
+### Dory Q3 et Q5 avec llama.cpp
+
+Le fork et le build CUDA indiqués dans l'installation sont nécessaires :
+
+```bash
+cd /home/gaspard/dory
+CUDA_HOME=/mnt/d/dory/tools/cuda-12.8-root/usr/local/cuda-12.8
+export LD_LIBRARY_PATH="$PWD/llama.cpp-dory/build-cuda/bin:$CUDA_HOME/lib64:/usr/lib/wsl/lib"
+```
+
+Q3, avec les 193 couches sur GPU et 2 boucles, comme dans le benchmark code :
+
+```bash
+llama.cpp-dory/build-cuda/bin/llama-server \
+  -m models/NVIDIA-Nemotron-Labs-Dory1.0-4B-Q3_K_M.gguf \
+  --host 127.0.0.1 --port 8081 -t 6 -c 4096 -ngl 193 \
+  --jinja --reasoning off \
+  --override-kv 'dory.num_loops=int:2,dory.recurrent_kv_cache_mode=str:per_loop'
+```
+
+Q5, avec placement GPU ajusté automatiquement et 2 boucles :
+
+```bash
+llama.cpp-dory/build-cuda/bin/llama-server \
+  -m models/NVIDIA-Nemotron-Labs-Dory1.0-4B-Q5_K_M.gguf \
+  --host 127.0.0.1 --port 8081 -t 6 -c 4096 -ngl auto \
+  --fit on --fit-target 256 --jinja --reasoning off \
+  --override-kv 'dory.num_loops=int:2,dory.recurrent_kv_cache_mode=str:per_loop'
+```
+
+Pour les variantes à 1 ou 4 boucles, remplacer `int:2` par `int:1` ou `int:4`.
+Pour un essai CPU seul, remplacer les options `-ngl ...` et `--fit ...` par
+`-ngl 0 --fit off`, avec l'un ou l'autre fichier GGUF.
+
+L'interface web intégrée de `llama-server` est activée par défaut : une fois
+le serveur prêt, ouvrir <http://127.0.0.1:8081/> dans un navigateur local.
+Depuis Windows, l'accès à ce port WSL dépend du transfert de localhost.
+
+Dans un autre terminal :
+
+```bash
+curl --fail http://127.0.0.1:8081/health
+curl --fail http://127.0.0.1:8081/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "dory",
+    "messages": [{"role": "user", "content": "Write only Python code for add(a, b)."}],
+    "temperature": 0,
+    "max_tokens": 128
+  }'
+```
+
+### CoDa NF4 sur GPU
+
+Le serveur charge l'export NF4 persistant et expose une API compatible avec
+`/v1/chat/completions` :
 
 ```bash
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
@@ -178,9 +243,44 @@ curl http://127.0.0.1:8000/v1/chat/completions \
   }'
 ```
 
-Le serveur traite une requête à la fois sur la GTX 1060. CoDa reste spécialisé
-code ; 64 étapes est le compromis pratique et 256 étapes est beaucoup plus
-lent sans amélioration mesurée sur les tâches généralistes.
+Attendre le message `CoDa ready` avant les requêtes. Le serveur traite une
+requête à la fois sur la GTX 1060. Modifier `--steps 64` au démarrage ou
+`diffusion_steps` dans la requête pour essayer 256 ou 768 étapes ; plus
+d'étapes accroît fortement le temps de calcul. Les benchmarks NF4 ont utilisé
+64 et 256 étapes. Ce serveur ne fournit pas d'interface web et utilise
+uniquement le dernier message utilisateur ; un client de chat côté serveur peut
+appeler son API, mais le script ne gère pas CORS pour une page servie depuis
+une autre origine.
+
+### CoDa FP32 : tests sans serveur HTTP
+
+`serve_coda.py` ne prend pas en charge les placements FP32 CPU ou hybrides :
+le chargement direct sur GPU du checkpoint FP32 ne convient pas à cette GTX
+1060. Les commandes suivantes exécutent seulement le prompt de test intégré
+au script, puis s'arrêtent ; elles ne démarrent pas d'API et écrasent le
+`summary.json` du placement correspondant.
+
+FP32 entièrement CPU :
+
+```bash
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
+python3 test_coda_fp32_offload.py --cpu-only --diffusion-test \
+  --steps 64 --max-new-tokens 128
+```
+
+FP32 hybride, 8 blocs GPU et 20 blocs CPU, sans offload de poids explicite sur
+disque :
+
+```bash
+PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 \
+python3 test_coda_fp32_offload.py --manual-gpu-layers 8 --diffusion-test \
+  --steps 768 --max-new-tokens 128
+```
+
+Remplacer `768` par `64` pour le test plus court. Ces essais utilisent environ
+11 Gio de RAM WSL disponible au total ; le système peut néanmoins recourir au
+swap et lire les poids depuis le disque. Ne pas utiliser les placements
+Accelerate pour la génération FP32 : ils ont échoué lors de nos essais.
 
 Les modèles, build products, jeux de réponses et résultats générés sont exclus
 de Git. Le rapport brut CPU est dans [`benchmark.md`](benchmark.md).

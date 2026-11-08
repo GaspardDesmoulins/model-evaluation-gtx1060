@@ -94,6 +94,7 @@ architecture personnalisée.
 | 6 GPU, 22 RAM, 0 disque | 3 548 Mio | 6,71 Gio | 4,85 s | Échec du dispatch |
 | 0 GPU, 28 RAM, chargement direct | 0 Mio | 7,45 Gio | 421,1 s | 64 étapes / 128 tokens : 172,8 s |
 | 8 GPU, 20 RAM, transferts manuels | 2 749 Mio | 8,77 Gio | 135,0 s | 64 étapes / 128 tokens : 146,5 s |
+| 8 GPU, 20 RAM, transferts manuels | 2 749 Mio | 8,77 Gio | 150,7 s | 768 étapes / 128 tokens : 1 741,7 s |
 
 Les deux premiers essais utilisent `Accelerate`, qui retourne 34 logits pour un
 masque de 35 positions pendant le débruitage. Le chargement direct en RAM
@@ -101,3 +102,8 @@ résout ce défaut ; huit blocs peuvent ensuite être déplacés manuellement su
 GTX 1060, tandis que les activations sont transférées explicitement une seule
 fois vers les blocs CPU. La génération GPU hybride est valide, mais le gain à
 64 étapes reste modeste et la qualité de CoDa demeure insuffisante.
+
+Le test à 768 étapes a utilisé un seul prompt demandant une fonction `add`.
+Le chargement a pris 37,8 s, puis la génération 29 min 02 s. La réponse
+contient une fonction correcte suivie d'une balise Markdown fermante isolée.
+Ce n'est pas un benchmark HumanEval ni une comparaison statistique de qualité.
