@@ -37,13 +37,22 @@ Ce ne sont pas des scores IFEval officiels complets.
 | Dory Q5 | 4 boucles | 56,25 % | 56,25 % | 20,12 tok/s | 2,80 tok/s | 28 min 51 s | 6,18 Gio | 2 275 Mio |
 | Bonsai-2 4B Q2_0 | Ollama | 43,75 % | 50,0 % | — | 15,77 tok/s | ~5 min 35 s | — | 1 693 Mio |
 | Qwen3.5 9B | Ollama | 62,5 % | 68,75 % | — | 4,36 tok/s | ~21 min 30 s | — | 1 459 Mio |
+| LFM3 Omni 2B | Ollama, Q4_K_M | 62,5 % | 62,5 % | 186,67 tok/s | 23,07 tok/s | 4 min 20 s* | — | 2 041 Mio* |
 | CoDa 1.7B | NF4, 64 étapes | 0 % | 0 % | — | — | 25 min 16 s | 5,43 Gio | 2 447 Mio |
 | CoDa 1.7B | NF4, 256 étapes | 0 % | 0 % | — | — | 1 h 10 min 56 s | 5,43 Gio | 2 447 Mio |
 
-Qwen3.5 9B obtient le meilleur score strict sur cet échantillon, avec un
-premier chargement mesuré à environ 76 s. Dory Q5 à 2 boucles égale le score
+Qwen3.5 9B et LFM3 Omni 2B obtiennent le meilleur score strict sur cet
+échantillon ; le premier chargement de Qwen a été mesuré à environ 76 s.
+Dory Q5 à 2 boucles égale le score
 à 4 boucles avec moins de RAM et de calcul ; Bonsai reste en retrait de
 12,5 points sur le score strict par rapport au Q5 à 2 boucles.
+
+L'essai LFM3 du 10 novembre 2026 a été lancé après le benchmark code, avec le
+modèle déjà chargé. Sa durée inclut les requêtes et l'évaluation locale. La
+VRAM indiquée est le maximum des relevés après requête, pas un pic continu.
+Les débits sont reconstitués à partir des 16 requêtes du journal Ollama :
+5 811 tokens générés en 251,86 s et 1 024 tokens de prompt en 5,49 s.
+Il s'agit uniquement d'entrées et de sorties textuelles, sans test multimodal.
 
 CoDa est un modèle de diffusion spécialisé code. À 64 étapes, huit réponses
 sur seize sont vides ; son résultat IFEval ne permet donc pas de le
@@ -87,10 +96,21 @@ inspectées statiquement ; aucun code généré n'a été exécuté.
 | Dory Q3 | 2 boucles, 193 couches GPU | 4/4 | 1 min 01 s | 30,3 s | 6,56 s | 2,22 Gio | 2 805 Mio |
 | Dory Q5 | 2 boucles, offload ajusté | 4/4 | 1 min 29 s | 51,1 s | 8,73 s | 4,68 Gio | 2 275 Mio |
 | Qwen3.5 9B | Ollama | 4/4 | 2 min 26 s | 91,8 s | 4,56 tok/s | — | 1 459 Mio |
+| LFM3 Omni 2B | Ollama, Q4_K_M | 3/4 | 17,2 s | 9,85 s | 27,26 tok/s | — | 2 041 Mio |
 
 Qwen est le plus lent à charger et à générer ; Dory Q3 est le plus rapide sur
-ce petit jeu de code. Ces réponses sont un contrôle qualitatif réduit, pas un
-remplacement de HumanEval.
+ce petit jeu parmi les essais Dory. Pour LFM3, le comptage 3/4 reflète
+l'inspection fonctionnelle : la fonction palindrome supprime la ponctuation
+en plus des espaces et ne respecte donc pas exactement la consigne. Les quatre
+réponses sont entourées de balises Markdown malgré la demande de code seul.
+Ces réponses sont un contrôle qualitatif réduit, pas un remplacement de
+HumanEval.
+
+L'essai LFM3 du 10 novembre 2026 utilise Ollama 0.40.15, le modèle local
+`lfm3-omni:2b` (Q4_K_M, ID `4c0ee9400634`) et un contexte de 4 096 tokens.
+Ollama indiquait 56 % CPU / 44 % GPU. Les 27,26 tok/s sont calculés sur
+154 tokens générés ; la VRAM est échantillonnée après chaque requête, donc
+ce n'est pas nécessairement le pic réel.
 
 ## Export CoDa NF4 persistant
 
@@ -160,13 +180,6 @@ python3 run_ifeval.py \
   --loops 2 --limit 16 --max-tokens 512
 ```
 
-Le script `run_ollama_ifeval.py` utilise la même sélection via l'API locale
-d'Ollama et désactive le raisonnement pour obtenir les réponses finales :
-
-```bash
-python3 run_ollama_ifeval.py qwen3.5:9b
-```
-
 Benchmarks CoDa code et IFEval avec le runtime isolé sur `D:` :
 
 ```bash
@@ -174,11 +187,66 @@ PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 run_coda_benchmark.py
 PYTHONPATH=/mnt/d/dory/tools/coda-python-cu121 python3 run_coda_ifeval.py
 ```
 
-Benchmark code commun via Ollama :
+### Benchmarks des modèles Ollama
+
+Installer Ollama et vérifier que son serveur répond sur `127.0.0.1:11434`.
+Si nécessaire, démarrer `ollama serve` dans un autre terminal. Les scripts
+utilisent `nvidia-smi` : une installation NVIDIA fonctionnelle est requise.
+Depuis `/home/gaspard/dory`, télécharger le modèle souhaité et vérifier son
+identifiant :
 
 ```bash
-python3 run_code_benchmark.py ollama --model qwen3.5:9b --name qwen3.5-9b
+cd /home/gaspard/dory
+ollama pull lfm3-omni:2b
+ollama list
+curl --fail http://127.0.0.1:11434/api/tags
 ```
+
+Le benchmark code envoie quatre prompts Python, à température 0, avec
+`think: false` et 128 tokens maximum. Remplacer le modèle et choisir un nom
+de sortie propre à l'essai :
+
+```bash
+python3 run_code_benchmark.py ollama \
+  --model lfm3-omni:2b --name lfm3-omni-2b --max-tokens 128
+```
+
+Les réponses et mesures figurent dans `results/code-lfm3-omni-2b/`
+(`responses.json`, `summary.json`) ; les réponses doivent être évaluées
+manuellement. Le script ne mesure pas la RAM et échantillonne la VRAM totale
+après chaque requête. La durée totale inclut le chargement éventuel, mais
+celui-ci est plus court si le modèle est déjà chargé. `ollama ps` permet de
+vérifier le placement CPU/GPU et la taille de contexte effective.
+
+IFEval nécessite le dépôt `google-research` dans `ifeval-source/`. Si ce
+répertoire n'existe pas, le préparer dans un environnement Python virtuel :
+
+```bash
+git clone --filter=blob:none --sparse https://github.com/google-research/google-research.git ifeval-source
+git -C ifeval-source checkout --detach 0f47c6e9a16935a8d8124f80d75cfc82784ac83d
+git -C ifeval-source sparse-checkout set instruction_following_eval
+python3 -m venv /mnt/d/dory/tools/ifeval-venv
+. /mnt/d/dory/tools/ifeval-venv/bin/activate
+python -m pip install -r ifeval-source/instruction_following_eval/requirements.txt
+python -m nltk.downloader punkt punkt_tab
+```
+
+Le commit ci-dessus est celui utilisé pour les essais. Avec cet environnement
+activé, lancer :
+
+```bash
+python3 run_ollama_ifeval.py lfm3-omni:2b --limit 16 --max-tokens 512
+```
+
+Le script sélectionne jusqu'à 16 prompts de façon déterministe par défaut,
+utilise la température 0 et `think: false`, puis calcule les scores strict et
+relâché. Adapter `--limit` et `--max-tokens` si nécessaire : les scores d'un
+échantillon ne constituent pas un IFEval officiel complet. Les fichiers sont
+écrits dans `results/ifeval-lfm3-omni-2b/` ; la VRAM est également relevée
+après chaque requête, et ni la RAM ni la durée ne sont enregistrées par ce
+script. Dans les deux benchmarks, le contexte et le placement dépendent de la
+configuration Ollama ; le traitement du raisonnement dépend du modèle.
+Relancer avec le même nom **écrase les résultats** correspondants.
 
 ### Tests CoDa FP32 ponctuels
 
